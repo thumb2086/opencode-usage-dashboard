@@ -108,6 +108,7 @@
       <div class="legend">
         <span><i class="sw" style="background:var(--in)"></i>Input / 天</span>
         <span><i class="sw" style="background:var(--out)"></i>Output / 天</span>
+        <span><i class="sw" style="background:var(--cache)"></i>Cache Read / 天</span>
       </div>
       <div class="chart"><div class="cols" id="trend-tokens"></div></div>
       <div class="cols" id="trend-token-x" style="height:auto;display:flex;justify-content:space-around;margin-top:6px"></div>
@@ -186,14 +187,18 @@ function render(d, models, trend) {
 
 function renderTrend(t) {
   const maxTok = Math.max(...t.input.map((v, i) => v + t.output[i]));
+  const maxCache = Math.max(...t.cacheRead);
   $('trend-tokens').innerHTML = t.input.map((v, i) => {
-    const h = maxTok > 0 ? ((v + t.output[i]) / maxTok) * 100 : 0;
     const hi = maxTok > 0 ? (v / maxTok) * 100 : 0;
     const ho = maxTok > 0 ? (t.output[i] / maxTok) * 100 : 0;
+    const hc = maxCache > 0 ? (t.cacheRead[i] / maxCache) * 100 : 0;
     return `<div class="col"><div class="cols">
-      <div style="height:${Math.max(hi, 0.5)}%;background:var(--in);width:14px"></div>
-      <div style="height:${Math.max(ho, 0.5)}%;background:var(--out);width:14px"></div>
-    </div><div class="tip">In ${fmt(v)} · Out ${fmt(t.output[i])}</div></div>`;
+      <div style="height:${Math.max(hc, 0.5)}%;background:var(--cache);opacity:.3;width:20px;border-radius:3px 3px 0 0"></div>
+      <div style="display:flex;gap:3px;align-items:flex-end;height:100%">
+        <div style="height:${Math.max(hi, 0.5)}%;background:var(--in);width:14px"></div>
+        <div style="height:${Math.max(ho, 0.5)}%;background:var(--out);width:14px"></div>
+      </div>
+    </div><div class="tip">In ${fmt(v)} · Out ${fmt(t.output[i])} · Cache ${fmt(t.cacheRead[i])}</div></div>`;
   }).join('');
   $('trend-token-x').innerHTML = t.labels.map((l) => `<span class="x">${l}</span>`).join('');
 
