@@ -1,0 +1,237 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>opencode 用量儀表板</title>
+<style>
+  :root {
+    --bg: #0d1117; --panel: #161b22; --border: #30363d; --text: #e6edf3; --muted: #8b949e;
+    --in: #58a6ff; --out: #3fb950; --cache: #d29922; --cost: #f778ba; --tool: #a371f7;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: var(--bg); color: var(--text); font-family: "Segoe UI", "Microsoft JhengHei", sans-serif; padding: 24px; }
+  header { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px; margin-bottom: 20px; }
+  h1 { font-size: 20px; font-weight: 600; }
+  h1 .dot { color: #3fb950; }
+  .status { display: flex; align-items: center; gap: 10px; color: var(--muted); font-size: 13px; }
+  .pill { padding: 4px 12px; border-radius: 999px; font-size: 12px; border: 1px solid var(--border); }
+  .pill.ok { color: #3fb950; border-color: #238636; background: rgba(63,185,80,.08); }
+  .pill.err { color: #f85149; border-color: #da3633; background: rgba(248,81,73,.08); }
+  section { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 18px; margin-bottom: 18px; }
+  h2 { font-size: 14px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: .5px; margin-bottom: 14px; }
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; }
+  .card { background: #0d1117; border: 1px solid var(--border); border-radius: 8px; padding: 14px; }
+  .card .v { font-size: 24px; font-weight: 700; margin-top: 4px; }
+  .card .l { font-size: 12px; color: var(--muted); }
+  .card .v small { font-size: 13px; color: var(--muted); font-weight: 500; }
+  .bar-row { display: grid; grid-template-columns: 150px 1fr 120px; align-items: center; gap: 12px; padding: 7px 0; font-size: 13px; }
+  .bar-row .name { color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .bar-row .val { text-align: right; font-variant-numeric: tabular-nums; }
+  .track { background: #21262d; border-radius: 4px; height: 12px; overflow: hidden; }
+  .fill { height: 100%; border-radius: 4px; transition: width .6s ease; min-width: 1px; }
+  .stack { display: flex; height: 100%; }
+  .stack > div { height: 100%; }
+  .legend { display: flex; gap: 16px; font-size: 12px; color: var(--muted); margin-bottom: 12px; flex-wrap: wrap; }
+  .legend span { display: flex; align-items: center; gap: 6px; }
+  .sw { width: 12px; height: 12px; border-radius: 3px; display: inline-block; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { padding: 8px 10px; text-align: right; border-bottom: 1px solid var(--border); font-variant-numeric: tabular-nums; }
+  th:first-child, td:first-child { text-align: left; }
+  th { color: var(--muted); font-weight: 500; font-size: 12px; }
+  .chart { display: flex; align-items: flex-end; gap: 4px; height: 160px; padding-top: 10px; }
+  .chart .col { flex: 1; display: flex; flex-direction: column; align-items: center; gap: 6px; height: 100%; justify-content: flex-end; }
+  .chart .cols { display: flex; gap: 3px; width: 100%; align-items: flex-end; justify-content: center; height: 130px; }
+  .chart .cols div { border-radius: 3px 3px 0 0; min-width: 8px; transition: height .6s ease; }
+  .chart .x { font-size: 11px; color: var(--muted); }
+  .chart .tip { font-size: 11px; color: var(--muted); }
+  .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
+  @media (max-width: 800px) { .two-col { grid-template-columns: 1fr; } }
+  .error-banner { display: none; background: rgba(248,81,73,.1); border: 1px solid #da3633; color: #f85149; padding: 10px 14px; border-radius: 8px; margin-bottom: 16px; font-size: 13px; }
+  .error-banner.show { display: block; }
+</style>
+</head>
+<body>
+<header>
+  <h1><span class="dot">●</span> opencode 用量儀表板</h1>
+  <div class="status">
+    <span id="updated">載入中…</span>
+    <span class="pill ok" id="pill">即時更新</span>
+  </div>
+</header>
+
+<div class="error-banner" id="errbanner"></div>
+
+<section>
+  <h2>概覽</h2>
+  <div class="cards">
+    <div class="card"><div class="l">工作階段</div><div class="v" id="ov-sessions">—</div></div>
+    <div class="card"><div class="l">訊息數</div><div class="v" id="ov-messages">—</div></div>
+    <div class="card"><div class="l">使用天數</div><div class="v" id="ov-days">—</div></div>
+    <div class="card"><div class="l">總費用</div><div class="v" id="ov-total">—</div></div>
+    <div class="card"><div class="l">平均費用 / 天</div><div class="v" id="ov-avgday">—</div></div>
+    <div class="card"><div class="l">平均 tokens / 場</div><div class="v" id="ov-avg">—</div></div>
+    <div class="card"><div class="l">中位數 tokens / 場</div><div class="v" id="ov-med">—</div></div>
+  </div>
+</section>
+
+<section>
+  <h2>Tokens 統計</h2>
+  <div class="legend">
+    <span><i class="sw" style="background:var(--in)"></i>Input</span>
+    <span><i class="sw" style="background:var(--out)"></i>Output</span>
+    <span><i class="sw" style="background:var(--cache)"></i>Cache Read</span>
+    <span><i class="sw" style="background:var(--cost)"></i>Cache Write</span>
+  </div>
+  <div id="token-bars"></div>
+</section>
+
+<section>
+  <h2>工具使用</h2>
+  <div id="tool-bars"></div>
+</section>
+
+<section>
+  <h2>模型使用</h2>
+  <table>
+    <thead>
+      <tr><th>模型</th><th>訊息</th><th>Input</th><th>Output</th><th>Cache Read</th><th style="width:26%">用量</th><th>費用</th></tr>
+    </thead>
+    <tbody id="model-rows"></tbody>
+  </table>
+</section>
+
+<section>
+  <h2>近 7 天趨勢</h2>
+  <div class="two-col">
+    <div>
+      <div class="legend">
+        <span><i class="sw" style="background:var(--in)"></i>Input / 天</span>
+        <span><i class="sw" style="background:var(--out)"></i>Output / 天</span>
+      </div>
+      <div class="chart"><div class="cols" id="trend-tokens"></div></div>
+      <div class="cols" id="trend-token-x" style="height:auto;display:flex;justify-content:space-around;margin-top:6px"></div>
+    </div>
+    <div>
+      <div class="legend"><span><i class="sw" style="background:var(--cost)"></i>費用 / 天</span></div>
+      <div class="chart"><div class="cols" id="trend-cost"></div></div>
+      <div class="cols" id="trend-cost-x" style="height:auto;display:flex;justify-content:space-around;margin-top:6px"></div>
+    </div>
+  </div>
+</section>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const fmt = (n) => {
+  if (n == null || isNaN(n)) return '—';
+  if (n >= 1e9) return (n / 1e9).toFixed(2) + 'B';
+  if (n >= 1e6) return (n / 1e6).toFixed(1) + 'M';
+  if (n >= 1e3) return (n / 1e3).toFixed(1) + 'K';
+  return String(Math.round(n));
+};
+const fmtCost = (n) => (n == null || isNaN(n)) ? '—' : '$' + n.toFixed(2);
+
+function barRow(name, value, max, color) {
+  const pct = max > 0 ? Math.max(0.5, (value / max) * 100) : 0;
+  return `<div class="bar-row"><div class="name">${name}</div>
+    <div class="track"><div class="fill" style="width:${pct}%;background:${color}"></div></div>
+    <div class="val">${fmt(value)}</div></div>`;
+}
+
+function render(d, models, trend) {
+  const o = d.overview || {};
+  $('ov-sessions').textContent = fmt(o.sessions);
+  $('ov-messages').textContent = fmt(o.messages);
+  $('ov-days').textContent = fmt(o.days);
+  $('ov-total').textContent = fmtCost(d.cost && d.cost.total);
+  $('ov-avgday').textContent = fmtCost(d.cost && d.cost.avgDay);
+  $('ov-avg').textContent = fmt(d.cost && d.cost.avgTokensSession);
+  $('ov-med').textContent = fmt(d.cost && d.cost.medianTokensSession);
+
+  if (d.cost) {
+    const vals = [d.cost.input, d.cost.output, d.cost.cacheRead, d.cost.cacheWrite];
+    const max = Math.max(...vals.filter(Number.isFinite));
+    $('token-bars').innerHTML =
+      barRow('Input', d.cost.input, max, 'var(--in)') +
+      barRow('Output', d.cost.output, max, 'var(--out)') +
+      barRow('Cache Read', d.cost.cacheRead, max, 'var(--cache)') +
+      barRow('Cache Write', d.cost.cacheWrite, max, 'var(--cost)');
+  }
+
+  if (d.tools && d.tools.length) {
+    $('tool-bars').innerHTML = d.tools.map((t) => barRow(t.name, t.count, d.tools[0].count, 'var(--tool)')).join('');
+  }
+
+  const modelList = (models && models.length ? models : (d.models || []));
+  if (modelList.length) {
+    const total = modelList.reduce((s, m) => s + m.input, 0);
+    $('model-rows').innerHTML = modelList.map((m) => {
+      const iw = total > 0 ? (m.input / total) * 100 : 0;
+      const ow = total > 0 ? (m.output / total) * 100 : 0;
+      const cw = total > 0 ? (m.cacheRead / total) * 100 : 0;
+      const w = Math.max(iw + ow + cw, 1);
+      return `<tr><td>${m.name}</td><td>${fmt(m.messages)}</td><td>${fmt(m.input)}</td>
+        <td>${fmt(m.output)}</td><td>${fmt(m.cacheRead)}</td>
+        <td><div class="track" style="height:10px"><div class="stack">
+          <div style="width:${(iw / w) * 100}%;background:var(--in)"></div>
+          <div style="width:${(ow / w) * 100}%;background:var(--out)"></div>
+          <div style="width:${(cw / w) * 100}%;background:var(--cache)"></div>
+        </div></div></td>
+        <td>${fmtCost(m.cost)}</td></tr>`;
+    }).join('');
+  }
+
+  if (trend) renderTrend(trend);
+}
+
+function renderTrend(t) {
+  const maxTok = Math.max(...t.input.map((v, i) => v + t.output[i]));
+  $('trend-tokens').innerHTML = t.input.map((v, i) => {
+    const h = maxTok > 0 ? ((v + t.output[i]) / maxTok) * 100 : 0;
+    const hi = maxTok > 0 ? (v / maxTok) * 100 : 0;
+    const ho = maxTok > 0 ? (t.output[i] / maxTok) * 100 : 0;
+    return `<div class="col"><div class="cols">
+      <div style="height:${Math.max(hi, 0.5)}%;background:var(--in);width:14px"></div>
+      <div style="height:${Math.max(ho, 0.5)}%;background:var(--out);width:14px"></div>
+    </div><div class="tip">In ${fmt(v)} · Out ${fmt(t.output[i])}</div></div>`;
+  }).join('');
+  $('trend-token-x').innerHTML = t.labels.map((l) => `<span class="x">${l}</span>`).join('');
+
+  const maxCost = Math.max(...t.cost);
+  $('trend-cost').innerHTML = t.cost.map((v, i) => {
+    const h = maxCost > 0 ? (v / maxCost) * 100 : 0;
+    return `<div class="col"><div class="cols">
+      <div style="height:${Math.max(h, 0.5)}%;background:var(--cost);width:24px"></div>
+    </div><div class="tip">${fmtCost(v)}</div></div>`;
+  }).join('');
+  $('trend-cost-x').innerHTML = t.labels.map((l) => `<span class="x">${l}</span>`).join('');
+}
+
+async function poll() {
+  try {
+    const r = await fetch('/api/stats?_=' + Date.now(), { cache: 'no-store' });
+    const j = await r.json();
+    if (!j.ok) {
+      $('errbanner').textContent = 'opencode stats 讀取失敗: ' + (j.error || '未知錯誤');
+      $('errbanner').classList.add('show');
+      $('pill').textContent = '讀取失敗';
+      $('pill').className = 'pill err';
+      return;
+    }
+    $('errbanner').classList.remove('show');
+    $('pill').textContent = '即時更新';
+    $('pill').className = 'pill ok';
+    render(j.data, j.models, j.trend);
+    const ago = Math.round((Date.now() - (j.generatedAt || 0)) / 1000);
+    $('updated').textContent = '更新於 ' + new Date().toLocaleTimeString('zh-TW', { hour12: false }) +
+      ' (數據產生於 ' + ago + ' 秒前)';
+  } catch (e) {
+    $('updated').textContent = '連線失敗: ' + e.message;
+  }
+}
+
+poll();
+setInterval(poll, 5000);
+</script>
+</body>
+</html>
