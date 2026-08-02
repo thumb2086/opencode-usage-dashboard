@@ -20,6 +20,10 @@
   .pill.err { color: #f85149; border-color: #da3633; background: rgba(248,81,73,.08); }
   .pill.lang { color: var(--text); border-color: var(--border); background: rgba(139,148,158,.08); }
   .pill.lang:hover { background: rgba(139,148,158,.18); }
+  .range-btns { display: flex; gap: 4px; }
+  .range-btns .pill.active { color: var(--text); border-color: #58a6ff; background: rgba(88,166,255,.12); }
+  .range-btns .pill:not(.active) { color: var(--muted); border-color: var(--border); background: transparent; }
+  .range-btns .pill:not(.active):hover { background: rgba(139,148,158,.08); }
   section { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 18px; margin-bottom: 18px; }
   h2 { font-size: 14px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: .5px; margin-bottom: 14px; }
   .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; }
@@ -104,7 +108,14 @@
 </section>
 
 <section>
-  <h2 data-i18n="dailyTrend">DAILY TREND (7 DAYS)</h2>
+  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
+    <h2 data-i18n="dailyTrend" style="margin:0">DAILY TREND</h2>
+    <div class="range-btns" id="rangeBtns">
+      <span class="pill active" data-days="7" onclick="setRange(7)">7D</span>
+      <span class="pill" data-days="30" onclick="setRange(30)">30D</span>
+      <span class="pill" data-days="90" onclick="setRange(90)">90D</span>
+    </div>
+  </div>
   <div class="two-col">
     <div>
       <div class="legend">
@@ -123,6 +134,18 @@
   </div>
 </section>
 
+<section>
+  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
+    <h2 data-i18n="report" style="margin:0">USAGE REPORT</h2>
+    <div class="range-btns" id="reportBtns">
+      <span class="pill active" data-days="1" onclick="loadReport(1)" data-i18n="daily">Daily</span>
+      <span class="pill" data-days="7" onclick="loadReport(7)" data-i18n="weekly">Weekly</span>
+      <span class="pill" data-days="30" onclick="loadReport(30)" data-i18n="monthly">Monthly</span>
+    </div>
+  </div>
+  <div id="reportContent" style="font-family:monospace;font-size:13px;line-height:1.6;white-space:pre;overflow-x:auto;color:var(--text)">Loading…</div>
+</section>
+
 <script>
 const STRINGS = {
   en: {
@@ -133,8 +156,9 @@ const STRINGS = {
     avgTokensSession: 'Avg Tokens / Session', medianTokensSession: 'Median Tokens / Session',
     tokenStats: 'TOKEN STATISTICS', toolUsage: 'TOOL USAGE', modelUsage: 'MODEL USAGE',
     thModel: 'Model', thMsgs: 'Messages', thUsage: 'Usage', thCost: 'Cost',
-    dailyTrend: 'DAILY TREND (7 DAYS)',
+    dailyTrend: 'DAILY TREND',
     inputDay: 'Input / Day', outputDay: 'Output / Day', cacheReadDay: 'Cache Read / Day', costDay: 'Cost / Day',
+    report: 'USAGE REPORT', daily: 'Daily', weekly: 'Weekly', monthly: 'Monthly',
     live: 'Live', loading: 'Loading…', lastUpdated: 'Last updated', dataAgo: 'data generated',
     statsFail: 'Failed to read opencode stats', connFail: 'Connection failed',
     langBtn: '繁中',
@@ -149,6 +173,7 @@ const STRINGS = {
     thModel: '模型', thMsgs: '訊息', thUsage: '用量', thCost: '費用',
     dailyTrend: '近 7 天趨勢',
     inputDay: 'Input / 天', outputDay: 'Output / 天', cacheReadDay: 'Cache Read / 天', costDay: '費用 / 天',
+    report: '用量報告', daily: '每日', weekly: '每週', monthly: '每月',
     live: '即時更新', loading: '載入中…', lastUpdated: '更新於', dataAgo: '數據產生於',
     statsFail: 'opencode stats 讀取失敗', connFail: '連線失敗',
     langBtn: 'EN',
@@ -176,6 +201,8 @@ function toggleLang() {
 }
 
 const $ = (id) => document.getElementById(id);
+let currentDays = parseInt(localStorage.getItem('trendDays') || '7', 10);
+
 const fmt = (n) => {
   if (n == null || isNaN(n)) return '—';
   if (n >= 1e9) return (n / 1e9).toFixed(2) + 'B';
@@ -266,7 +293,7 @@ function renderTrend(t) {
 
 async function poll() {
   try {
-    const r = await fetch('/api/stats?_=' + Date.now(), { cache: 'no-store' });
+    const r = await fetch('/api/stats?days=' + currentDays + '&_=' + Date.now(), { cache: 'no-store' });
     const j = await r.json();
     if (!j.ok) {
       $('errbanner').textContent = t('statsFail') + ': ' + (j.error || '');
@@ -287,9 +314,71 @@ async function poll() {
   }
 }
 
+function setRange(days) {
+  currentDays = days;
+  localStorage.setItem('trendDays', days);
+  document.querySelectorAll('#rangeBtns .pill').forEach((el) => {
+    el.classList.toggle('active', parseInt(el.dataset.days, 10) === days);
+  });
+  poll();
+}
+
+let reportLoading = false;
+async function loadReport(days) {
+  if (reportLoading) return;
+  reportLoading = true;
+  document.querySelectorAll('#reportBtns .pill').forEach((el) => {
+    el.classList.toggle('active', parseInt(el.dataset.days, 10) === days);
+  });
+  $('reportContent').textContent = t('loading');
+  try {
+    const r = await fetch('/api/report?days=' + days + '&_=' + Date.now(), { cache: 'no-store' });
+    const j = await r.json();
+    if (!j.ok) { $('reportContent').textContent = 'Error'; reportLoading = false; return; }
+    const fmt = (n) => { const v = parseFloat(n); if (isNaN(v)) return '—'; return v === 0 ? '$0.00' : '$' + v.toFixed(4); };
+    const fmtT = (n) => { const v = parseInt(n, 10); if (isNaN(v)) return '—'; if (v >= 1e9) return (v/1e9).toFixed(2)+'B'; if (v >= 1e6) return (v/1e6).toFixed(1)+'M'; if (v >= 1e3) return (v/1e3).toFixed(1)+'K'; return String(v); };
+    const pad = (s, w) => { s = String(s); return s.length >= w ? s : s + ' '.repeat(w - s.length); };
+    const rpad = (s, w) => { s = String(s); return s.length >= w ? s : ' '.repeat(w - s.length) + s; };
+    let out = '';
+    const s = j.stats;
+    if (s && s.ok) {
+      const o = s.overview || {};
+      const c = s.cost || {};
+      out += 'OPENCODE USAGE STATEMENT\n';
+      out += 'Period: ' + j.label + '  |  Last ' + j.days + ' day(s)\n';
+      out += '---\n';
+      out += 'SUMMARY\n';
+      out += '  Sessions ........... ' + (o.sessions || 0) + '\n';
+      out += '  Messages ........... ' + (o.messages || 0) + '\n';
+      out += '  Total Cost ......... $' + (c.total || 0).toFixed(2) + '\n';
+      out += '  Tokens In/Out ...... ' + fmtT(c.input) + ' / ' + fmtT(c.output) + '\n';
+      out += '  Cache Read/Write ... ' + fmtT(c.cacheRead) + ' / ' + fmtT(c.cacheWrite) + '\n';
+      out += '\n';
+    }
+    if (j.providers && j.providers.length) {
+      out += 'PROVIDERS & MODELS\n';
+      j.providers.forEach((p) => {
+        out += '  ' + pad(p.provider + '/' + p.model, 45) + pad(p.sessions + ' sessions', 14) + '  ' + rpad(fmt(p.cost), 10) + '   ' + rpad(fmtT(p.tok_in), 8) + ' in / ' + rpad(fmtT(p.tok_out), 8) + ' out\n';
+      });
+      out += '\n';
+    }
+    if (j.agents && j.agents.length) {
+      out += 'AGENTS\n';
+      j.agents.forEach((a) => {
+        out += '  ' + pad(a.agent, 45) + pad(a.sessions + ' sessions', 14) + '  ' + rpad(fmt(a.cost), 10) + '   ' + rpad(fmtT(a.tok_in), 8) + ' in / ' + rpad(fmtT(a.tok_out), 8) + ' out\n';
+      });
+    }
+    $('reportContent').textContent = out || 'No data for this period.';
+  } catch (e) {
+    $('reportContent').textContent = t('connFail') + ': ' + e.message;
+  }
+  reportLoading = false;
+}
+
 applyI18n();
 poll();
 setInterval(poll, 5000);
+loadReport(1);
 </script>
 </body>
 </html>

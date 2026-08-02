@@ -7,7 +7,6 @@ const path = require('path');
 const PORT = 4868;
 const REFRESH_MS = 10000;
 const TREND_MS = 3 * 60 * 1000;
-const TREND_DAYS = 8;
 
 const EXE = (() => {
   const candidates = [
@@ -17,7 +16,9 @@ const EXE = (() => {
   return 'opencode';
 })();
 
-const state = { data: null, busy: false, error: null, updatedAt: 0, models: null, modelsBusy: false, trend: null, trendBusy: false, trendAt: 0 };
+const state = { data: null, busy: false, error: null, updatedAt: 0, models: null, modelsBusy: false };
+
+const trendCache = {};
 
 function run(args, timeout = 120000) {
   return new Promise((resolve) => {
@@ -116,7 +117,7 @@ async function refresh() {
     state.error = null;
     state.updatedAt = Date.now();
   } else {
-    state.error = state.error || 'opencode stats 讀取失敗';
+    state.error = state.error || 'opencode stats failed';
   }
   state.busy = false;
 }
@@ -144,48 +145,58 @@ function sub(a, b) {
   };
 }
 
-async function refreshTrend() {
-  if (state.trendBusy) return;
-  state.trendBusy = true;
-  try {
-    const rows = [];
-    for (let d = 1; d <= TREND_DAYS; d++) {
-      const p = await runStats(['stats', '--days', String(d)]);
-      if (!p) return;
-      rows.push(p);
-    }
-    const first = rows[0];
-    const buckets = [{
-      sessions: first.overview.sessions,
-      messages: first.overview.messages,
-      total: first.cost.total,
-      input: first.cost.input,
-      output: first.cost.output,
-      cacheRead: first.cost.cacheRead,
-    }];
-    for (let i = 1; i < rows.length; i++) buckets.push(sub(rows[i], rows[i - 1]));
-    state.trend = {
-      generatedAt: Date.now(),
-      labels: buckets.map((_, i) => {
-        const d = new Date(Date.now() - i * 86400000);
-        return (d.getMonth() + 1) + '/' + d.getDate();
-      }),
-      sessions: buckets.map((b) => b.sessions),
-      messages: buckets.map((b) => b.messages),
-      input: buckets.map((b) => b.input),
-      output: buckets.map((b) => b.output),
-      cacheRead: buckets.map((b) => b.cacheRead),
-      cost: buckets.map((b) => b.total),
-    };
-    state.trendAt = Date.now();
-  } finally {
-    state.trendBusy = false;
+async function generateTrend(days) {
+  const steps = days === 7 ? 8 : days === 30 ? 10 : days === 90 ? 13 : 1;
+  const stepSize = days === 7 ? 1 : days === 30 ? 3 : days === 90 ? 7 : days;
+  const rows = [];
+  for (let i = 1; i <= steps; i++) {
+    const d = Math.min(i * stepSize, days);
+    const p = await runStats(['stats', '--days', String(d)]);
+    if (!p) return null;
+    rows.push(p);
   }
+  const first = rows[0];
+  const buckets = [{
+    sessions: first.overview.sessions,
+    messages: first.overview.messages,
+    total: first.cost.total,
+    input: first.cost.input,
+    output: first.cost.output,
+    cacheRead: first.cost.cacheRead,
+  }];
+  for (let i = 1; i < rows.length; i++) buckets.push(sub(rows[i], rows[i - 1]));
+  const now = Date.now();
+  return {
+    generatedAt: now,
+    labels: buckets.map((_, i) => {
+      const d = new Date(now - i * stepSize * 86400000);
+      return (d.getMonth() + 1) + '/' + d.getDate();
+    }),
+    sessions: buckets.map((b) => b.sessions),
+    messages: buckets.map((b) => b.messages),
+    input: buckets.map((b) => b.input),
+    output: buckets.map((b) => b.output),
+    cacheRead: buckets.map((b) => b.cacheRead),
+    cost: buckets.map((b) => b.total),
+  };
 }
 
-const server = http.createServer((req, res) => {
-  const u = (req.url || '/').split('?')[0];
+async function refreshTrend(days) {
+  const key = String(days || 7);
+  if (trendCache[key] && Date.now() - trendCache[key].generatedAt < TREND_MS) {
+    return trendCache[key];
+  }
+  const trend = await generateTrend(days || 7);
+  if (trend) trendCache[key] = trend;
+  return trend;
+}
+
+const server = http.createServer(async (req, res) => {
+  const url = new URL(req.url || '/', `http://127.0.0.1:${PORT}`);
+  const u = url.pathname;
   if (u === '/api/stats') {
+    const days = url.searchParams.get('days') || '7';
+    const trend = await refreshTrend(parseInt(days, 10) || 7);
     res.setHeader('Content-Type', 'application/json; charset=utf-8');
     res.setHeader('Cache-Control', 'no-store');
     res.end(JSON.stringify({
@@ -194,7 +205,37 @@ const server = http.createServer((req, res) => {
       generatedAt: state.updatedAt,
       data: state.data,
       models: state.models,
-      trend: state.trend,
+      trend: trend,
+    }));
+  } else if (u === '/api/report') {
+    const days = parseInt(url.searchParams.get('days') || '1', 10);
+    const label = days <= 1 ? 'Daily' : days <= 7 ? 'Weekly' : 'Monthly';
+    const [statsR, agentR, modelR] = await Promise.all([
+      runStats(['stats', '--days', String(days), '--models', '20']),
+      run(['db', `SELECT agent, COUNT(*) AS sessions, ROUND(SUM(cost),4) AS cost, SUM(tokens_input) AS tok_in, SUM(tokens_output) AS tok_out, SUM(tokens_cache_read) AS cache_read FROM session WHERE agent IS NOT NULL AND time_created >= (strftime('%s','now','-${days} day') * 1000) GROUP BY agent ORDER BY cost DESC;`, '--format', 'tsv']),
+      run(['db', `SELECT json_extract(model,'$.providerID') AS provider, json_extract(model,'$.id') AS model, COUNT(*) AS sessions, ROUND(SUM(cost),4) AS cost, SUM(tokens_input) AS tok_in, SUM(tokens_output) AS tok_out, SUM(tokens_cache_read) AS cache_read FROM session WHERE model IS NOT NULL AND time_created >= (strftime('%s','now','-${days} day') * 1000) GROUP BY provider, model ORDER BY cost DESC;`, '--format', 'tsv']),
+    ]);
+    const parseTSV = (text) => {
+      if (!text) return [];
+      const lines = text.trim().split('\n');
+      if (lines.length < 2) return [];
+      const headers = lines[0].split('\t');
+      return lines.slice(1).map((line) => {
+        const cols = line.split('\t');
+        const obj = {};
+        headers.forEach((h, i) => { obj[h.trim()] = (cols[i] || '').trim(); });
+        return obj;
+      });
+    };
+    res.setHeader('Content-Type', 'application/json; charset=utf-8');
+    res.setHeader('Cache-Control', 'no-store');
+    res.end(JSON.stringify({
+      ok: true,
+      label: label,
+      days: days,
+      stats: statsR,
+      agents: parseTSV(agentR.out),
+      providers: parseTSV(modelR.out),
     }));
   } else if (u === '/') {
     res.setHeader('Content-Type', 'text/html; charset=utf-8');
@@ -209,8 +250,9 @@ server.listen(PORT, '127.0.0.1', () => {
   console.log(`opencode stats dashboard: http://127.0.0.1:${PORT}`);
 });
 
-refresh().then(() => refreshTrend());
+refresh();
 refreshModels();
+refreshTrend(7);
 setInterval(refresh, REFRESH_MS);
 setInterval(refreshModels, 60000);
-setInterval(refreshTrend, TREND_MS);
+setInterval(() => { for (const k of Object.keys(trendCache)) refreshTrend(parseInt(k, 10)); }, TREND_MS);
