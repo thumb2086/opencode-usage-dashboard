@@ -1,0 +1,19 @@
+{
+  "name": "opencode-dashboard",
+  "version": "1.0.0",
+  "description": "Real-time dashboard for opencode token usage and cost statistics",
+  "main": "server.js",
+  "bin": {
+    "opencode-dashboard": "server.js"
+  },
+  "scripts": {
+    "start": "node server.js"
+  },
+  "keywords": ["opencode", "dashboard", "tokens", "usage", "statistics"],
+  "author": "thumb2086",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/thumb2086/opencode-usage-dashboard"
+  }
+}

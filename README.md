@@ -19,14 +19,25 @@ Real-time dashboard for your [opencode](https://opencode.ai) token usage and cos
 
 ## Usage
 
-```powershell
-# Windows
-.\start.ps1
-```
+### Install globally (recommended)
 
 ```bash
-# Manual
-node server.js
+npm install -g github:thumb2086/opencode-usage-dashboard
+opencode-dashboard
+```
+
+### Or run directly
+
+```bash
+git clone https://github.com/thumb2086/opencode-usage-dashboard.git
+cd opencode-usage-dashboard
+npm start
+```
+
+### Windows PowerShell
+
+```powershell
+.\start.ps1
 ```
 
 Then open http://127.0.0.1:4868 in your browser.

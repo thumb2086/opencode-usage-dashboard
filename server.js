@@ -1,3 +1,4 @@
+#!/usr/bin/env node
 const { execFile } = require('child_process');
 const http = require('http');
 const fs = require('fs');
