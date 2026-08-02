@@ -10,6 +10,7 @@ Real-time dashboard for your [opencode](https://opencode.ai) token usage and cos
 - Per-model usage (messages, input, output, cache read, cost)
 - Daily trend chart for the last 7 days (tokens per day and cost per day)
 - Polls `/api/stats` every 5 seconds in the browser; the server re-runs `opencode stats` every 10 seconds
+- **i18n**: English (default) + Traditional Chinese, auto-detects browser language, manual toggle with localStorage
 
 ## Requirements
 
