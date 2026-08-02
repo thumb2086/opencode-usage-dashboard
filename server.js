@@ -165,7 +165,10 @@ async function refreshTrend() {
     for (let i = 1; i < rows.length; i++) buckets.push(sub(rows[i], rows[i - 1]));
     state.trend = {
       generatedAt: Date.now(),
-      labels: buckets.map((_, i) => i === 0 ? '今天' : `${i}天前`),
+      labels: buckets.map((_, i) => {
+        const d = new Date(Date.now() - i * 86400000);
+        return (d.getMonth() + 1) + '/' + d.getDate();
+      }),
       sessions: buckets.map((b) => b.sessions),
       messages: buckets.map((b) => b.messages),
       input: buckets.map((b) => b.input),

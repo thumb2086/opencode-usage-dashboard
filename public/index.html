@@ -186,12 +186,11 @@ function render(d, models, trend) {
 }
 
 function renderTrend(t) {
-  const maxTok = Math.max(...t.input.map((v, i) => v + t.output[i]));
-  const maxCache = Math.max(...t.cacheRead);
+  const maxAll = Math.max(...t.input, ...t.output, ...t.cacheRead);
   $('trend-tokens').innerHTML = t.input.map((v, i) => {
-    const hi = maxTok > 0 ? (v / maxTok) * 100 : 0;
-    const ho = maxTok > 0 ? (t.output[i] / maxTok) * 100 : 0;
-    const hc = maxCache > 0 ? (t.cacheRead[i] / maxCache) * 100 : 0;
+    const hi = maxAll > 0 ? (v / maxAll) * 100 : 0;
+    const ho = maxAll > 0 ? (t.output[i] / maxAll) * 100 : 0;
+    const hc = maxAll > 0 ? (t.cacheRead[i] / maxAll) * 100 : 0;
     return `<div class="col"><div class="cols">
       <div style="height:${Math.max(hc, 0.5)}%;background:var(--cache);opacity:.3;width:20px;border-radius:3px 3px 0 0"></div>
       <div style="display:flex;gap:3px;align-items:flex-end;height:100%">
