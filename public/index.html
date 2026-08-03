@@ -122,13 +122,14 @@
         <span><i class="sw" style="background:var(--in)"></i><span data-i18n="inputDay">Input / Day</span></span>
         <span><i class="sw" style="background:var(--out)"></i><span data-i18n="outputDay">Output / Day</span></span>
         <span><i class="sw" style="background:var(--cache)"></i><span data-i18n="cacheReadDay">Cache Read / Day</span></span>
+        <span id="trendStatus" style="color:var(--cache);font-size:11px"></span>
       </div>
-      <div class="chart"><div class="cols" id="trend-tokens"></div></div>
+      <div class="chart" id="trendTokensChart"><div class="cols" id="trend-tokens"></div></div>
       <div class="cols" id="trend-token-x" style="height:auto;display:flex;justify-content:space-around;margin-top:6px"></div>
     </div>
     <div>
       <div class="legend"><span><i class="sw" style="background:var(--cost)"></i><span data-i18n="costDay">Cost / Day</span></span></div>
-      <div class="chart"><div class="cols" id="trend-cost"></div></div>
+      <div class="chart" id="trendCostChart"><div class="cols" id="trend-cost"></div></div>
       <div class="cols" id="trend-cost-x" style="height:auto;display:flex;justify-content:space-around;margin-top:6px"></div>
     </div>
   </div>
@@ -159,6 +160,7 @@ const STRINGS = {
     dailyTrend: 'DAILY TREND',
     inputDay: 'Input / Day', outputDay: 'Output / Day', cacheReadDay: 'Cache Read / Day', costDay: 'Cost / Day',
     report: 'USAGE REPORT', daily: 'Daily', weekly: 'Weekly', monthly: 'Monthly',
+    updating: 'updating…', generating: 'Generating trend data…',
     live: 'Live', loading: 'Loading…', lastUpdated: 'Last updated', dataAgo: 'data generated',
     statsFail: 'Failed to read opencode stats', connFail: 'Connection failed',
     langBtn: '繁中',
@@ -174,6 +176,7 @@ const STRINGS = {
     dailyTrend: '近 7 天趨勢',
     inputDay: 'Input / 天', outputDay: 'Output / 天', cacheReadDay: 'Cache Read / 天', costDay: '費用 / 天',
     report: '用量報告', daily: '每日', weekly: '每週', monthly: '每月',
+    updating: '更新中…', generating: '趨勢資料產生中…',
     live: '即時更新', loading: '載入中…', lastUpdated: '更新於', dataAgo: '數據產生於',
     statsFail: 'opencode stats 讀取失敗', connFail: '連線失敗',
     langBtn: 'EN',
@@ -262,7 +265,16 @@ function render(d, models, trend) {
     }).join('');
   }
 
-  if (trend) renderTrend(trend);
+  if (trend && trend.input && trend.input.length) {
+    renderTrend(trend);
+    $('trendStatus').textContent = trend.stale ? ' ⟳ ' + t('updating') : '';
+  } else {
+    $('trend-tokens').innerHTML = '';
+    $('trend-token-x').innerHTML = '';
+    $('trend-cost').innerHTML = '';
+    $('trend-cost-x').innerHTML = '';
+    $('trendStatus').textContent = '⏳ ' + t('generating');
+  }
 }
 
 function renderTrend(t) {
@@ -324,28 +336,37 @@ function setRange(days) {
 }
 
 let reportLoading = false;
+let reportRetry = 0;
 async function loadReport(days) {
   if (reportLoading) return;
   reportLoading = true;
   document.querySelectorAll('#reportBtns .pill').forEach((el) => {
     el.classList.toggle('active', parseInt(el.dataset.days, 10) === days);
   });
-  $('reportContent').textContent = t('loading');
   try {
     const r = await fetch('/api/report?days=' + days + '&_=' + Date.now(), { cache: 'no-store' });
     const j = await r.json();
     if (!j.ok) { $('reportContent').textContent = 'Error'; reportLoading = false; return; }
+    if (!j.ready || !j.report) {
+      $('reportContent').textContent = '⏳ ' + t('generating') + '…';
+      reportLoading = false;
+      reportRetry++;
+      if (reportRetry < 24) setTimeout(() => loadReport(days), 5000);
+      return;
+    }
+    reportRetry = 0;
+    const jr = j.report;
     const fmt = (n) => { const v = parseFloat(n); if (isNaN(v)) return '—'; return v === 0 ? '$0.00' : '$' + v.toFixed(4); };
     const fmtT = (n) => { const v = parseInt(n, 10); if (isNaN(v)) return '—'; if (v >= 1e9) return (v/1e9).toFixed(2)+'B'; if (v >= 1e6) return (v/1e6).toFixed(1)+'M'; if (v >= 1e3) return (v/1e3).toFixed(1)+'K'; return String(v); };
     const pad = (s, w) => { s = String(s); return s.length >= w ? s : s + ' '.repeat(w - s.length); };
     const rpad = (s, w) => { s = String(s); return s.length >= w ? s : ' '.repeat(w - s.length) + s; };
     let out = '';
-    const s = j.stats;
+    const s = jr.stats;
     if (s && s.ok) {
       const o = s.overview || {};
       const c = s.cost || {};
       out += 'OPENCODE USAGE STATEMENT\n';
-      out += 'Period: ' + j.label + '  |  Last ' + j.days + ' day(s)\n';
+      out += 'Period: ' + jr.label + '  |  Last ' + jr.days + ' day(s)' + (jr.stale ? '  [stale]' : '') + '\n';
       out += '---\n';
       out += 'SUMMARY\n';
       out += '  Sessions ........... ' + (o.sessions || 0) + '\n';
@@ -355,16 +376,16 @@ async function loadReport(days) {
       out += '  Cache Read/Write ... ' + fmtT(c.cacheRead) + ' / ' + fmtT(c.cacheWrite) + '\n';
       out += '\n';
     }
-    if (j.providers && j.providers.length) {
+    if (jr.providers && jr.providers.length) {
       out += 'PROVIDERS & MODELS\n';
-      j.providers.forEach((p) => {
+      jr.providers.forEach((p) => {
         out += '  ' + pad(p.provider + '/' + p.model, 45) + pad(p.sessions + ' sessions', 14) + '  ' + rpad(fmt(p.cost), 10) + '   ' + rpad(fmtT(p.tok_in), 8) + ' in / ' + rpad(fmtT(p.tok_out), 8) + ' out\n';
       });
       out += '\n';
     }
-    if (j.agents && j.agents.length) {
+    if (jr.agents && jr.agents.length) {
       out += 'AGENTS\n';
-      j.agents.forEach((a) => {
+      jr.agents.forEach((a) => {
         out += '  ' + pad(a.agent, 45) + pad(a.sessions + ' sessions', 14) + '  ' + rpad(fmt(a.cost), 10) + '   ' + rpad(fmtT(a.tok_in), 8) + ' in / ' + rpad(fmtT(a.tok_out), 8) + ' out\n';
       });
     }

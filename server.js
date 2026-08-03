@@ -7,6 +7,7 @@ const path = require('path');
 const PORT = 4868;
 const REFRESH_MS = 10000;
 const TREND_MS = 10 * 60 * 1000;
+const REPORT_TTL = 10 * 60 * 1000;
 
 const EXE = (() => {
   const candidates = [
@@ -29,6 +30,7 @@ function run(args, timeout = 120000) {
 
 const trendCache = {};
 const trendBusy = {};
+const trendPending = {};
 
 async function generateTrend(days) {
   const steps = days === 7 ? 8 : days === 30 ? 10 : days === 90 ? 13 : 1;
@@ -69,15 +71,20 @@ async function generateTrend(days) {
 function refreshTrend(days) {
   const key = String(days);
   const hit = trendCache[key];
-  if (hit && Date.now() - hit.generatedAt < TREND_MS) return hit;
-  if (trendBusy[key]) return hit || null;
-  trendBusy[key] = true;
-  generateTrend(days).then((t) => {
-    if (t) trendCache[key] = t;
-  }).catch(() => {}).finally(() => {
-    delete trendBusy[key];
-  });
-  return hit || null;
+  const fresh = hit && Date.now() - hit.generatedAt < TREND_MS;
+  if (fresh) return { trend: hit, pending: null };
+  let pending = trendPending[key];
+  if (!pending) {
+    pending = generateTrend(days).then((t) => {
+      if (t) trendCache[key] = t;
+    }).catch(() => {}).finally(() => {
+      delete trendBusy[key];
+      delete trendPending[key];
+    });
+    trendPending[key] = pending;
+    trendBusy[key] = true;
+  }
+  return { trend: hit ? Object.assign({}, hit, { stale: true }) : null, pending };
 }
 
 const clean = (s) => String(s).replace(/[^\x20-\x7E\n]/g, '');
@@ -232,12 +239,59 @@ async function generateTrend(days) {
   };
 }
 
+const reportCache = {};
+const reportBusy = {};
+
+async function buildReport(days) {
+  const label = days <= 1 ? 'Daily' : days <= 7 ? 'Weekly' : 'Monthly';
+  const [statsR, agentR, modelR] = await Promise.all([
+    runStats(['stats', '--days', String(days), '--models', '20']),
+    run(['db', `SELECT agent, COUNT(*) AS sessions, ROUND(SUM(cost),4) AS cost, SUM(tokens_input) AS tok_in, SUM(tokens_output) AS tok_out, SUM(tokens_cache_read) AS cache_read FROM session WHERE agent IS NOT NULL AND time_created >= (strftime('%s','now','-${days} day') * 1000) GROUP BY agent ORDER BY cost DESC;`, '--format', 'tsv']),
+    run(['db', `SELECT json_extract(model,'$.providerID') AS provider, json_extract(model,'$.id') AS model, COUNT(*) AS sessions, ROUND(SUM(cost),4) AS cost, SUM(tokens_input) AS tok_in, SUM(tokens_output) AS tok_out, SUM(tokens_cache_read) AS cache_read FROM session WHERE model IS NOT NULL AND time_created >= (strftime('%s','now','-${days} day') * 1000) GROUP BY provider, model ORDER BY cost DESC;`, '--format', 'tsv']),
+  ]);
+  const parseTSV = (text) => {
+    if (!text) return [];
+    const lines = text.trim().split('\n');
+    if (lines.length < 2) return [];
+    const headers = lines[0].split('\t');
+    return lines.slice(1).map((line) => {
+      const cols = line.split('\t');
+      const obj = {};
+      headers.forEach((h, i) => { obj[h.trim()] = (cols[i] || '').trim(); });
+      return obj;
+    });
+  };
+  return {
+    label: label,
+    days: days,
+    stats: statsR,
+    agents: parseTSV(agentR.out),
+    providers: parseTSV(modelR.out),
+  };
+}
+
+function refreshReport(days) {
+  const key = String(days);
+  const hit = reportCache[key];
+  const fresh = hit && Date.now() - hit.generatedAt < REPORT_TTL;
+  if (fresh) return { report: hit, ready: true };
+  if (!reportBusy[key]) {
+    reportBusy[key] = true;
+    buildReport(days).then((r) => {
+      reportCache[key] = Object.assign({}, r, { generatedAt: Date.now() });
+    }).catch(() => {}).finally(() => {
+      delete reportBusy[key];
+    });
+  }
+  return hit ? { report: Object.assign({}, hit, { stale: true }), ready: true } : { report: null, ready: false };
+}
+
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url || '/', `http://127.0.0.1:${PORT}`);
   const u = url.pathname;
   if (u === '/api/stats') {
-    const days = url.searchParams.get('days') || '7';
-    const trend = await refreshTrend(parseInt(days, 10) || 7);
+    const days = parseInt(url.searchParams.get('days') || '7', 10) || 7;
+    const r = refreshTrend(days);
     res.setHeader('Content-Type', 'application/json; charset=utf-8');
     res.setHeader('Cache-Control', 'no-store');
     res.end(JSON.stringify({
@@ -246,37 +300,18 @@ const server = http.createServer(async (req, res) => {
       generatedAt: state.updatedAt,
       data: state.data,
       models: state.models,
-      trend: trend,
+      trend: r.trend,
+      trendReady: !!r.trend,
     }));
   } else if (u === '/api/report') {
-    const days = parseInt(url.searchParams.get('days') || '1', 10);
-    const label = days <= 1 ? 'Daily' : days <= 7 ? 'Weekly' : 'Monthly';
-    const [statsR, agentR, modelR] = await Promise.all([
-      runStats(['stats', '--days', String(days), '--models', '20']),
-      run(['db', `SELECT agent, COUNT(*) AS sessions, ROUND(SUM(cost),4) AS cost, SUM(tokens_input) AS tok_in, SUM(tokens_output) AS tok_out, SUM(tokens_cache_read) AS cache_read FROM session WHERE agent IS NOT NULL AND time_created >= (strftime('%s','now','-${days} day') * 1000) GROUP BY agent ORDER BY cost DESC;`, '--format', 'tsv']),
-      run(['db', `SELECT json_extract(model,'$.providerID') AS provider, json_extract(model,'$.id') AS model, COUNT(*) AS sessions, ROUND(SUM(cost),4) AS cost, SUM(tokens_input) AS tok_in, SUM(tokens_output) AS tok_out, SUM(tokens_cache_read) AS cache_read FROM session WHERE model IS NOT NULL AND time_created >= (strftime('%s','now','-${days} day') * 1000) GROUP BY provider, model ORDER BY cost DESC;`, '--format', 'tsv']),
-    ]);
-    const parseTSV = (text) => {
-      if (!text) return [];
-      const lines = text.trim().split('\n');
-      if (lines.length < 2) return [];
-      const headers = lines[0].split('\t');
-      return lines.slice(1).map((line) => {
-        const cols = line.split('\t');
-        const obj = {};
-        headers.forEach((h, i) => { obj[h.trim()] = (cols[i] || '').trim(); });
-        return obj;
-      });
-    };
+    const days = parseInt(url.searchParams.get('days') || '1', 10) || 1;
+    const r = refreshReport(days);
     res.setHeader('Content-Type', 'application/json; charset=utf-8');
     res.setHeader('Cache-Control', 'no-store');
     res.end(JSON.stringify({
       ok: true,
-      label: label,
-      days: days,
-      stats: statsR,
-      agents: parseTSV(agentR.out),
-      providers: parseTSV(modelR.out),
+      ready: r.ready,
+      report: r.report,
     }));
   } else if (u === '/') {
     res.setHeader('Content-Type', 'text/html; charset=utf-8');
@@ -293,7 +328,15 @@ server.listen(PORT, '127.0.0.1', () => {
 
 refresh();
 refreshModels();
-refreshTrend(7);
+refreshReport(1);
+refreshReport(7);
+refreshReport(30);
+(async () => {
+  await refreshTrend(7).pending;
+  await refreshTrend(30).pending;
+  await refreshTrend(90).pending;
+})();
 setInterval(refresh, REFRESH_MS);
 setInterval(refreshModels, 60000);
 setInterval(() => { for (const k of Object.keys(trendCache)) refreshTrend(parseInt(k, 10)); }, TREND_MS);
+setInterval(() => { for (const k of Object.keys(reportCache)) refreshReport(parseInt(k, 10)); }, REPORT_TTL);
