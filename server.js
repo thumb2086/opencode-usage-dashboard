@@ -6,7 +6,7 @@ const path = require('path');
 
 const PORT = 4868;
 const REFRESH_MS = 10000;
-const TREND_MS = 3 * 60 * 1000;
+const TREND_MS = 10 * 60 * 1000;
 
 const EXE = (() => {
   const candidates = [
@@ -18,8 +18,6 @@ const EXE = (() => {
 
 const state = { data: null, busy: false, error: null, updatedAt: 0, models: null, modelsBusy: false };
 
-const trendCache = {};
-
 function run(args, timeout = 120000) {
   return new Promise((resolve) => {
     execFile(EXE, args, { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, windowsHide: true, timeout }, (err, stdout) => {
@@ -27,6 +25,59 @@ function run(args, timeout = 120000) {
       resolve({ ok: true, out: stdout });
     });
   });
+}
+
+const trendCache = {};
+const trendBusy = {};
+
+async function generateTrend(days) {
+  const steps = days === 7 ? 8 : days === 30 ? 10 : days === 90 ? 13 : 1;
+  const stepSize = days === 7 ? 1 : days === 30 ? 3 : days === 90 ? 7 : days;
+  const rows = [];
+  for (let i = 1; i <= steps; i++) {
+    const d = Math.min(i * stepSize, days);
+    const p = await runStats(['stats', '--days', String(d)]);
+    if (!p) return null;
+    rows.push(p);
+  }
+  const first = rows[0];
+  const buckets = [{
+    sessions: first.overview.sessions,
+    messages: first.overview.messages,
+    total: first.cost.total,
+    input: first.cost.input,
+    output: first.cost.output,
+    cacheRead: first.cost.cacheRead,
+  }];
+  for (let i = 1; i < rows.length; i++) buckets.push(sub(rows[i], rows[i - 1]));
+  const now = Date.now();
+  return {
+    generatedAt: now,
+    labels: buckets.map((_, i) => {
+      const d = new Date(now - i * stepSize * 86400000);
+      return (d.getMonth() + 1) + '/' + d.getDate();
+    }),
+    sessions: buckets.map((b) => b.sessions),
+    messages: buckets.map((b) => b.messages),
+    input: buckets.map((b) => b.input),
+    output: buckets.map((b) => b.output),
+    cacheRead: buckets.map((b) => b.cacheRead),
+    cost: buckets.map((b) => b.total),
+  };
+}
+
+function refreshTrend(days) {
+  const key = String(days);
+  const hit = trendCache[key];
+  if (hit && Date.now() - hit.generatedAt < TREND_MS) return hit;
+  if (trendBusy[key]) return hit || null;
+  trendBusy[key] = true;
+  generateTrend(days).then((t) => {
+    if (t) trendCache[key] = t;
+  }).catch(() => {}).finally(() => {
+    delete trendBusy[key];
+  });
+  return hit || null;
 }
 
 const clean = (s) => String(s).replace(/[^\x20-\x7E\n]/g, '');
@@ -179,16 +230,6 @@ async function generateTrend(days) {
     cacheRead: buckets.map((b) => b.cacheRead),
     cost: buckets.map((b) => b.total),
   };
-}
-
-async function refreshTrend(days) {
-  const key = String(days || 7);
-  if (trendCache[key] && Date.now() - trendCache[key].generatedAt < TREND_MS) {
-    return trendCache[key];
-  }
-  const trend = await generateTrend(days || 7);
-  if (trend) trendCache[key] = trend;
-  return trend;
 }
 
 const server = http.createServer(async (req, res) => {
