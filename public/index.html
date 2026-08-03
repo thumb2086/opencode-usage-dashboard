@@ -363,13 +363,13 @@ async function loadReport(days) {
     const pad = (s, w) => { s = String(s); return s.length >= w ? s : s + ' '.repeat(w - s.length); };
     const rpad = (s, w) => { s = String(s); return s.length >= w ? s : ' '.repeat(w - s.length) + s; };
     let out = '';
+    out += 'OPENCODE USAGE STATEMENT\n';
+    out += 'Period: ' + jr.label + '  |  Last ' + jr.days + ' day(s)' + cachedNote + '\n';
+    out += '---\n';
     const s = jr.stats;
     if (s && s.ok) {
       const o = s.overview || {};
       const c = s.cost || {};
-      out += 'OPENCODE USAGE STATEMENT\n';
-      out += 'Period: ' + jr.label + '  |  Last ' + jr.days + ' day(s)' + cachedNote + '\n';
-      out += '---\n';
       out += 'SUMMARY\n';
       out += '  Sessions ........... ' + (o.sessions || 0) + '\n';
       out += '  Messages ........... ' + (o.messages || 0) + '\n';

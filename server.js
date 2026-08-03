@@ -169,7 +169,7 @@ async function runStats(args) {
   if (!r.ok) return null;
   const p = parseStats(r.out);
   if (!validRow(p)) return null;
-  return p;
+  return Object.assign({ ok: true }, p);
 }
 
 async function refresh() {
@@ -214,7 +214,12 @@ const reportBusy = {};
 
 async function buildReport(days) {
   const label = days <= 1 ? 'Daily' : days <= 7 ? 'Weekly' : 'Monthly';
-  const [statsR, agentR, modelR] = await Promise.all([
+  let statsR = await runStats(['stats', '--days', String(days), '--models', '20']);
+  if (!statsR) {
+    await new Promise((r) => setTimeout(r, 2000));
+    statsR = await runStats(['stats', '--days', String(days), '--models', '20']);
+  }
+  const [agentR, modelR] = await Promise.all([
     runStats(['stats', '--days', String(days), '--models', '20']),
     run(['db', `SELECT agent, COUNT(*) AS sessions, ROUND(SUM(cost),4) AS cost, SUM(tokens_input) AS tok_in, SUM(tokens_output) AS tok_out, SUM(tokens_cache_read) AS cache_read FROM session WHERE agent IS NOT NULL AND time_created >= (strftime('%s','now','-${days} day') * 1000) GROUP BY agent ORDER BY cost DESC;`, '--format', 'tsv']),
     run(['db', `SELECT json_extract(model,'$.providerID') AS provider, json_extract(model,'$.id') AS model, COUNT(*) AS sessions, ROUND(SUM(cost),4) AS cost, SUM(tokens_input) AS tok_in, SUM(tokens_output) AS tok_out, SUM(tokens_cache_read) AS cache_read FROM session WHERE model IS NOT NULL AND time_created >= (strftime('%s','now','-${days} day') * 1000) GROUP BY provider, model ORDER BY cost DESC;`, '--format', 'tsv']),
@@ -248,7 +253,9 @@ function refreshReport(days) {
   if (!reportBusy[key]) {
     reportBusy[key] = true;
     buildReport(days).then((r) => {
-      reportCache[key] = Object.assign({}, r, { generatedAt: Date.now() });
+      if (r && r.stats && r.stats.ok) {
+        reportCache[key] = Object.assign({}, r, { generatedAt: Date.now() });
+      }
     }).catch(() => {}).finally(() => {
       delete reportBusy[key];
     });
@@ -298,13 +305,15 @@ server.listen(PORT, '127.0.0.1', () => {
 
 refresh();
 refreshModels();
-refreshReport(1);
-refreshReport(7);
-refreshReport(30);
 (async () => {
-  await refreshTrend(7).pending;
-  await refreshTrend(30).pending;
-  await refreshTrend(90).pending;
+  for (const d of [1, 7, 30]) {
+    const r = await buildReport(d);
+    if (r && r.stats && r.stats.ok) reportCache[String(d)] = Object.assign({}, r, { generatedAt: Date.now() });
+  }
+  for (const d of [7, 30, 90]) {
+    const t = await generateTrend(d);
+    if (t) trendCache[String(d)] = t;
+  }
 })();
 setInterval(refresh, REFRESH_MS);
 setInterval(refreshModels, 60000);
