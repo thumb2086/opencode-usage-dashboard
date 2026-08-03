@@ -160,7 +160,7 @@ const STRINGS = {
     dailyTrend: 'DAILY TREND',
     inputDay: 'Input / Day', outputDay: 'Output / Day', cacheReadDay: 'Cache Read / Day', costDay: 'Cost / Day',
     report: 'USAGE REPORT', daily: 'Daily', weekly: 'Weekly', monthly: 'Monthly',
-    updating: 'updating…', generating: 'Generating trend data…',
+    updating: 'updating…', generating: 'Generating trend data…', cachedAt: 'cached at',
     live: 'Live', loading: 'Loading…', lastUpdated: 'Last updated', dataAgo: 'data generated',
     statsFail: 'Failed to read opencode stats', connFail: 'Connection failed',
     langBtn: '繁中',
@@ -176,7 +176,7 @@ const STRINGS = {
     dailyTrend: '近 7 天趨勢',
     inputDay: 'Input / 天', outputDay: 'Output / 天', cacheReadDay: 'Cache Read / 天', costDay: '費用 / 天',
     report: '用量報告', daily: '每日', weekly: '每週', monthly: '每月',
-    updating: '更新中…', generating: '趨勢資料產生中…',
+    updating: '更新中…', generating: '趨勢資料產生中…', cachedAt: '快取於',
     live: '即時更新', loading: '載入中…', lastUpdated: '更新於', dataAgo: '數據產生於',
     statsFail: 'opencode stats 讀取失敗', connFail: '連線失敗',
     langBtn: 'EN',
@@ -356,6 +356,8 @@ async function loadReport(days) {
     }
     reportRetry = 0;
     const jr = j.report;
+    const genTime = jr.generatedAt ? new Date(jr.generatedAt).toLocaleTimeString(lang === 'zh-TW' ? 'zh-TW' : 'en', { hour12: false }) : '?';
+    const cachedNote = jr.stale ? ' [⟳ ' + t('updating') + ']' : ' [' + t('cachedAt') + ' ' + genTime + ']';
     const fmt = (n) => { const v = parseFloat(n); if (isNaN(v)) return '—'; return v === 0 ? '$0.00' : '$' + v.toFixed(4); };
     const fmtT = (n) => { const v = parseInt(n, 10); if (isNaN(v)) return '—'; if (v >= 1e9) return (v/1e9).toFixed(2)+'B'; if (v >= 1e6) return (v/1e6).toFixed(1)+'M'; if (v >= 1e3) return (v/1e3).toFixed(1)+'K'; return String(v); };
     const pad = (s, w) => { s = String(s); return s.length >= w ? s : s + ' '.repeat(w - s.length); };
@@ -366,7 +368,7 @@ async function loadReport(days) {
       const o = s.overview || {};
       const c = s.cost || {};
       out += 'OPENCODE USAGE STATEMENT\n';
-      out += 'Period: ' + jr.label + '  |  Last ' + jr.days + ' day(s)' + (jr.stale ? '  [stale]' : '') + '\n';
+      out += 'Period: ' + jr.label + '  |  Last ' + jr.days + ' day(s)' + cachedNote + '\n';
       out += '---\n';
       out += 'SUMMARY\n';
       out += '  Sessions ........... ' + (o.sessions || 0) + '\n';

@@ -33,15 +33,21 @@ const trendBusy = {};
 const trendPending = {};
 
 async function generateTrend(days) {
-  const steps = days === 7 ? 8 : days === 30 ? 10 : days === 90 ? 13 : 1;
-  const stepSize = days === 7 ? 1 : days === 30 ? 3 : days === 90 ? 7 : days;
-  const rows = [];
-  for (let i = 1; i <= steps; i++) {
-    const d = Math.min(i * stepSize, days);
-    const p = await runStats(['stats', '--days', String(d)]);
-    if (!p) return null;
-    rows.push(p);
-  }
+  const results = new Array(days);
+  let next = 0;
+  let failed = false;
+  const workers = Array.from({ length: 2 }, async () => {
+    while (!failed) {
+      const i = next++;
+      if (i >= days) return;
+      const p = await runStats(['stats', '--days', String(i + 1)]);
+      if (!p) { failed = true; return; }
+      results[i] = p;
+    }
+  });
+  await Promise.all(workers);
+  if (failed) return null;
+  const rows = results;
   const first = rows[0];
   const buckets = [{
     sessions: first.overview.sessions,
@@ -56,7 +62,7 @@ async function generateTrend(days) {
   return {
     generatedAt: now,
     labels: buckets.map((_, i) => {
-      const d = new Date(now - i * stepSize * 86400000);
+      const d = new Date(now - i * 86400000);
       return (d.getMonth() + 1) + '/' + d.getDate();
     }),
     sessions: buckets.map((b) => b.sessions),
@@ -203,42 +209,6 @@ function sub(a, b) {
   };
 }
 
-async function generateTrend(days) {
-  const steps = days === 7 ? 8 : days === 30 ? 10 : days === 90 ? 13 : 1;
-  const stepSize = days === 7 ? 1 : days === 30 ? 3 : days === 90 ? 7 : days;
-  const rows = [];
-  for (let i = 1; i <= steps; i++) {
-    const d = Math.min(i * stepSize, days);
-    const p = await runStats(['stats', '--days', String(d)]);
-    if (!p) return null;
-    rows.push(p);
-  }
-  const first = rows[0];
-  const buckets = [{
-    sessions: first.overview.sessions,
-    messages: first.overview.messages,
-    total: first.cost.total,
-    input: first.cost.input,
-    output: first.cost.output,
-    cacheRead: first.cost.cacheRead,
-  }];
-  for (let i = 1; i < rows.length; i++) buckets.push(sub(rows[i], rows[i - 1]));
-  const now = Date.now();
-  return {
-    generatedAt: now,
-    labels: buckets.map((_, i) => {
-      const d = new Date(now - i * stepSize * 86400000);
-      return (d.getMonth() + 1) + '/' + d.getDate();
-    }),
-    sessions: buckets.map((b) => b.sessions),
-    messages: buckets.map((b) => b.messages),
-    input: buckets.map((b) => b.input),
-    output: buckets.map((b) => b.output),
-    cacheRead: buckets.map((b) => b.cacheRead),
-    cost: buckets.map((b) => b.total),
-  };
-}
-
 const reportCache = {};
 const reportBusy = {};
 
@@ -338,5 +308,3 @@ refreshReport(30);
 })();
 setInterval(refresh, REFRESH_MS);
 setInterval(refreshModels, 60000);
-setInterval(() => { for (const k of Object.keys(trendCache)) refreshTrend(parseInt(k, 10)); }, TREND_MS);
-setInterval(() => { for (const k of Object.keys(reportCache)) refreshReport(parseInt(k, 10)); }, REPORT_TTL);
