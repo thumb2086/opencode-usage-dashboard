@@ -33,12 +33,17 @@ const trendBusy = {};
 const trendPending = {};
 
 async function generateTrend(days) {
-  const rows = [];
-  for (let i = 1; i <= days; i++) {
-    const p = await runStats(['stats', '--days', String(i)]);
-    if (!p) return null;
-    rows.push(p);
-  }
+  const results = new Array(days);
+  let next = 0;
+  const worker = async () => {
+    while (next < days) {
+      const i = next++;
+      results[i] = await runStats(['stats', '--days', String(i + 1)]);
+    }
+  };
+  await Promise.all(Array.from({ length: 4 }, worker));
+  if (results.some((r) => !r)) return null;
+  const rows = results;
   const first = rows[0];
   const buckets = [{
     sessions: first.overview.sessions,
@@ -203,6 +208,20 @@ function sub(a, b) {
 const reportCache = {};
 const reportBusy = {};
 
+function parseTSV(text) {
+  if (!text) return [];
+  const cleaned = text.replace(/[^\x20-\x7E\n\t]/g, '');
+  const lines = cleaned.trim().split('\n');
+  if (lines.length < 2) return [];
+  const headers = lines[0].split('\t');
+  return lines.slice(1).map((line) => {
+    const cols = line.split('\t');
+    const obj = {};
+    headers.forEach((h, i) => { obj[h.trim()] = (cols[i] || '').trim(); });
+    return obj;
+  });
+}
+
 async function buildReport(days) {
   const label = days <= 1 ? 'Daily' : days <= 7 ? 'Weekly' : 'Monthly';
   let statsR = await runStats(['stats', '--days', String(days), '--models', '20']);
@@ -211,22 +230,9 @@ async function buildReport(days) {
     statsR = await runStats(['stats', '--days', String(days), '--models', '20']);
   }
   const [agentR, modelR] = await Promise.all([
-    runStats(['stats', '--days', String(days), '--models', '20']),
     run(['db', `SELECT agent, COUNT(*) AS sessions, ROUND(SUM(cost),4) AS cost, SUM(tokens_input) AS tok_in, SUM(tokens_output) AS tok_out, SUM(tokens_cache_read) AS cache_read FROM session WHERE agent IS NOT NULL AND time_created >= (strftime('%s','now','-${days} day') * 1000) GROUP BY agent ORDER BY cost DESC;`, '--format', 'tsv']),
     run(['db', `SELECT json_extract(model,'$.providerID') AS provider, json_extract(model,'$.id') AS model, COUNT(*) AS sessions, ROUND(SUM(cost),4) AS cost, SUM(tokens_input) AS tok_in, SUM(tokens_output) AS tok_out, SUM(tokens_cache_read) AS cache_read FROM session WHERE model IS NOT NULL AND time_created >= (strftime('%s','now','-${days} day') * 1000) GROUP BY provider, model ORDER BY cost DESC;`, '--format', 'tsv']),
   ]);
-  const parseTSV = (text) => {
-    if (!text) return [];
-    const lines = text.trim().split('\n');
-    if (lines.length < 2) return [];
-    const headers = lines[0].split('\t');
-    return lines.slice(1).map((line) => {
-      const cols = line.split('\t');
-      const obj = {};
-      headers.forEach((h, i) => { obj[h.trim()] = (cols[i] || '').trim(); });
-      return obj;
-    });
-  };
   return {
     label: label,
     days: days,
