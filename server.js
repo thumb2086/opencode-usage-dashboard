@@ -33,21 +33,12 @@ const trendBusy = {};
 const trendPending = {};
 
 async function generateTrend(days) {
-  const results = new Array(days);
-  let next = 0;
-  let failed = false;
-  const workers = Array.from({ length: 2 }, async () => {
-    while (!failed) {
-      const i = next++;
-      if (i >= days) return;
-      const p = await runStats(['stats', '--days', String(i + 1)]);
-      if (!p) { failed = true; return; }
-      results[i] = p;
-    }
-  });
-  await Promise.all(workers);
-  if (failed) return null;
-  const rows = results;
+  const rows = [];
+  for (let i = 1; i <= days; i++) {
+    const p = await runStats(['stats', '--days', String(i)]);
+    if (!p) return null;
+    rows.push(p);
+  }
   const first = rows[0];
   const buckets = [{
     sessions: first.overview.sessions,
