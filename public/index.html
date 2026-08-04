@@ -54,6 +54,14 @@
   @media (max-width: 800px) { .two-col { grid-template-columns: 1fr; } }
   .error-banner { display: none; background: rgba(248,81,73,.1); border: 1px solid #da3633; color: #f85149; padding: 10px 14px; border-radius: 8px; margin-bottom: 16px; font-size: 13px; }
   .error-banner.show { display: block; }
+  .skeleton { background: linear-gradient(90deg, #21262d 25%, #30363d 50%, #21262d 75%); background-size: 200% 100%; animation: shimmer 1.5s infinite; border-radius: 4px; }
+  @keyframes shimmer { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
+  .skeleton-text { height: 1em; margin: 4px 0; }
+  .skeleton-card { height: 60px; }
+  .trend-bar { position: absolute; bottom: 0; border-radius: 2px 2px 0 0; transition: height .4s ease; }
+  .trend-bar-cache { left: 0; right: 0; opacity: .2; }
+  .trend-bar-input { left: 25%; width: 22%; z-index: 1; }
+  .trend-bar-output { left: 53%; width: 22%; z-index: 1; }
 </style>
 </head>
 <body>
@@ -283,29 +291,29 @@ function render(d, models, trend) {
   }
 }
 
-function renderTrend(t) {
-  const n = t.labels.length;
-  const maxAll = Math.max(...t.input, ...t.output, ...t.cacheRead);
-  const hasCost = t.cost.some((v) => v > 0);
+function renderTrend(data) {
+  const n = data.labels.length;
+  const maxAll = Math.max(...data.input, ...data.output, ...data.cacheRead);
+  const hasCost = data.cost.some((v) => v > 0);
 
-  $('trend-tokens').innerHTML = t.labels.map((l, i) => {
-    const hi = maxAll > 0 ? (t.input[i] / maxAll) * 100 : 0;
-    const ho = maxAll > 0 ? (t.output[i] / maxAll) * 100 : 0;
-    const hc = maxAll > 0 ? (t.cacheRead[i] / maxAll) * 100 : 0;
-    const tip = l + ': In ' + fmt(t.input[i]) + ' · Out ' + fmt(t.output[i]) + ' · Cache ' + fmt(t.cacheRead[i]);
+  $('trend-tokens').innerHTML = data.labels.map((l, i) => {
+    const hi = maxAll > 0 ? (data.input[i] / maxAll) * 100 : 0;
+    const ho = maxAll > 0 ? (data.output[i] / maxAll) * 100 : 0;
+    const hc = maxAll > 0 ? (data.cacheRead[i] / maxAll) * 100 : 0;
+    const tip = l + ': In ' + fmt(data.input[i]) + ' · Out ' + fmt(data.output[i]) + ' · Cache ' + fmt(data.cacheRead[i]);
     return `<div class="col" title="${tip}">
       <div style="display:flex;gap:2px;align-items:flex-end;width:100%;height:170px;justify-content:center">
         <div style="position:relative;width:100%;height:100%">
-          <div style="position:absolute;bottom:0;left:0;right:0;height:${Math.max(hc, 1)}%;background:var(--cache);opacity:.2;border-radius:2px 2px 0 0"></div>
-          <div style="position:absolute;bottom:0;left:25%;width:22%;height:${Math.max(hi, 1)}%;background:var(--in);border-radius:2px 2px 0 0;z-index:1"></div>
-          <div style="position:absolute;bottom:0;left:53%;width:22%;height:${Math.max(ho, 1)}%;background:var(--out);border-radius:2px 2px 0 0;z-index:1"></div>
+          <div class="trend-bar trend-bar-cache" style="height:${Math.max(hc, 1)}%;background:var(--cache)"></div>
+          <div class="trend-bar trend-bar-input" style="height:${Math.max(hi, 1)}%;background:var(--in)"></div>
+          <div class="trend-bar trend-bar-output" style="height:${Math.max(ho, 1)}%;background:var(--out)"></div>
         </div>
       </div>
     </div>`;
   }).join('');
 
   const labelStep = Math.max(1, Math.ceil(n / 14));
-  $('trend-token-x').innerHTML = t.labels.map((l, i) =>
+  $('trend-token-x').innerHTML = data.labels.map((l, i) =>
     `<span class="x" style="flex:1;text-align:center;${i % labelStep === 0 ? '' : 'visibility:hidden'}">${l}</span>`).join('');
 
   if (hasCost) {
@@ -313,17 +321,17 @@ function renderTrend(t) {
     $('trendCostChart').style.display = '';
     $('trend-cost-x').style.display = '';
     $('costZeroNote').style.display = 'none';
-    const maxCost = Math.max(...t.cost);
-    $('trend-cost').innerHTML = t.labels.map((l, i) => {
-      const h = maxCost > 0 ? (t.cost[i] / maxCost) * 100 : 0;
-      const tip = l + ': $' + (t.cost[i] || 0).toFixed(2);
+    const maxCost = Math.max(...data.cost);
+    $('trend-cost').innerHTML = data.labels.map((l, i) => {
+      const h = maxCost > 0 ? (data.cost[i] / maxCost) * 100 : 0;
+      const tip = l + ': $' + (data.cost[i] || 0).toFixed(2);
       return `<div class="col" title="${tip}">
         <div style="display:flex;align-items:flex-end;width:100%;height:170px;justify-content:center">
           <div style="width:50%;height:${Math.max(h, 1)}%;background:var(--cost);border-radius:2px 2px 0 0"></div>
         </div>
       </div>`;
     }).join('');
-    $('trend-cost-x').innerHTML = t.labels.map((l, i) =>
+    $('trend-cost-x').innerHTML = data.labels.map((l, i) =>
       `<span class="x" style="flex:1;text-align:center;${i % labelStep === 0 ? '' : 'visibility:hidden'}">${l}</span>`).join('');
   } else {
     $('costSection').querySelector('.legend').style.display = 'none';
@@ -369,6 +377,47 @@ function setRange(days) {
 
 let reportLoading = false;
 let reportRetry = 0;
+const MAX_REPORT_RETRIES = 12;
+
+function formatReport(jr) {
+  const genTime = jr.generatedAt ? new Date(jr.generatedAt).toLocaleTimeString(lang === 'zh-TW' ? 'zh-TW' : 'en', { hour12: false }) : '?';
+  const cachedNote = jr.stale ? ' [⟳ ' + t('updating') + ']' : ' [' + t('cachedAt') + ' ' + genTime + ']';
+  const fmtCost = (n) => { const v = parseFloat(n); if (isNaN(v)) return '—'; return v === 0 ? '$0.00' : '$' + v.toFixed(4); };
+  const fmtT = (n) => { const v = parseInt(n, 10); if (isNaN(v)) return '—'; if (v >= 1e9) return (v/1e9).toFixed(2)+'B'; if (v >= 1e6) return (v/1e6).toFixed(1)+'M'; if (v >= 1e3) return (v/1e3).toFixed(1)+'K'; return String(v); };
+  const pad = (s, w) => { s = String(s); return s.length >= w ? s : s + ' '.repeat(w - s.length); };
+  const rpad = (s, w) => { s = String(s); return s.length >= w ? s : ' '.repeat(w - s.length) + s; };
+  let out = '';
+  out += 'OPENCODE USAGE STATEMENT\n';
+  out += 'Period: ' + jr.label + '  |  Last ' + jr.days + ' day(s)' + cachedNote + '\n';
+  out += '---\n';
+  const s = jr.stats;
+  if (s && s.ok) {
+    const o = s.overview || {};
+    const c = s.cost || {};
+    out += 'SUMMARY\n';
+    out += '  Sessions ........... ' + (o.sessions || 0) + '\n';
+    out += '  Messages ........... ' + (o.messages || 0) + '\n';
+    out += '  Total Cost ......... $' + (c.total || 0).toFixed(2) + '\n';
+    out += '  Tokens In/Out ...... ' + fmtT(c.input) + ' / ' + fmtT(c.output) + '\n';
+    out += '  Cache Read/Write ... ' + fmtT(c.cacheRead) + ' / ' + fmtT(c.cacheWrite) + '\n';
+    out += '\n';
+  }
+  if (jr.providers && jr.providers.length) {
+    out += 'PROVIDERS & MODELS\n';
+    jr.providers.forEach((p) => {
+      out += '  ' + pad(p.provider + '/' + p.model, 45) + pad(p.sessions + ' sessions', 14) + '  ' + rpad(fmtCost(p.cost), 10) + '   ' + rpad(fmtT(p.tok_in), 8) + ' in / ' + rpad(fmtT(p.tok_out), 8) + ' out\n';
+    });
+    out += '\n';
+  }
+  if (jr.agents && jr.agents.length) {
+    out += 'AGENTS\n';
+    jr.agents.forEach((a) => {
+      out += '  ' + pad(a.agent, 45) + pad(a.sessions + ' sessions', 14) + '  ' + rpad(fmtCost(a.cost), 10) + '   ' + rpad(fmtT(a.tok_in), 8) + ' in / ' + rpad(fmtT(a.tok_out), 8) + ' out\n';
+    });
+  }
+  return out || 'No data for this period.';
+}
+
 async function loadReport(days) {
   if (reportLoading) return;
   reportLoading = true;
@@ -381,49 +430,16 @@ async function loadReport(days) {
     if (!j.ok) { $('reportContent').textContent = 'Error'; reportLoading = false; return; }
     if (!j.ready || !j.report) {
       $('reportContent').textContent = '⏳ ' + t('generating') + '…';
-      reportLoading = false;
       reportRetry++;
-      if (reportRetry < 24) setTimeout(() => loadReport(days), 5000);
+      if (reportRetry < MAX_REPORT_RETRIES) {
+        const delay = Math.min(1000 * Math.pow(1.5, reportRetry), 15000);
+        setTimeout(() => loadReport(days), delay);
+      }
+      reportLoading = false;
       return;
     }
     reportRetry = 0;
-    const jr = j.report;
-    const genTime = jr.generatedAt ? new Date(jr.generatedAt).toLocaleTimeString(lang === 'zh-TW' ? 'zh-TW' : 'en', { hour12: false }) : '?';
-    const cachedNote = jr.stale ? ' [⟳ ' + t('updating') + ']' : ' [' + t('cachedAt') + ' ' + genTime + ']';
-    const fmt = (n) => { const v = parseFloat(n); if (isNaN(v)) return '—'; return v === 0 ? '$0.00' : '$' + v.toFixed(4); };
-    const fmtT = (n) => { const v = parseInt(n, 10); if (isNaN(v)) return '—'; if (v >= 1e9) return (v/1e9).toFixed(2)+'B'; if (v >= 1e6) return (v/1e6).toFixed(1)+'M'; if (v >= 1e3) return (v/1e3).toFixed(1)+'K'; return String(v); };
-    const pad = (s, w) => { s = String(s); return s.length >= w ? s : s + ' '.repeat(w - s.length); };
-    const rpad = (s, w) => { s = String(s); return s.length >= w ? s : ' '.repeat(w - s.length) + s; };
-    let out = '';
-    out += 'OPENCODE USAGE STATEMENT\n';
-    out += 'Period: ' + jr.label + '  |  Last ' + jr.days + ' day(s)' + cachedNote + '\n';
-    out += '---\n';
-    const s = jr.stats;
-    if (s && s.ok) {
-      const o = s.overview || {};
-      const c = s.cost || {};
-      out += 'SUMMARY\n';
-      out += '  Sessions ........... ' + (o.sessions || 0) + '\n';
-      out += '  Messages ........... ' + (o.messages || 0) + '\n';
-      out += '  Total Cost ......... $' + (c.total || 0).toFixed(2) + '\n';
-      out += '  Tokens In/Out ...... ' + fmtT(c.input) + ' / ' + fmtT(c.output) + '\n';
-      out += '  Cache Read/Write ... ' + fmtT(c.cacheRead) + ' / ' + fmtT(c.cacheWrite) + '\n';
-      out += '\n';
-    }
-    if (jr.providers && jr.providers.length) {
-      out += 'PROVIDERS & MODELS\n';
-      jr.providers.forEach((p) => {
-        out += '  ' + pad(p.provider + '/' + p.model, 45) + pad(p.sessions + ' sessions', 14) + '  ' + rpad(fmt(p.cost), 10) + '   ' + rpad(fmtT(p.tok_in), 8) + ' in / ' + rpad(fmtT(p.tok_out), 8) + ' out\n';
-      });
-      out += '\n';
-    }
-    if (jr.agents && jr.agents.length) {
-      out += 'AGENTS\n';
-      jr.agents.forEach((a) => {
-        out += '  ' + pad(a.agent, 45) + pad(a.sessions + ' sessions', 14) + '  ' + rpad(fmt(a.cost), 10) + '   ' + rpad(fmtT(a.tok_in), 8) + ' in / ' + rpad(fmtT(a.tok_out), 8) + ' out\n';
-      });
-    }
-    $('reportContent').textContent = out || 'No data for this period.';
+    $('reportContent').textContent = formatReport(j.report);
   } catch (e) {
     $('reportContent').textContent = t('connFail') + ': ' + e.message;
   }
@@ -432,7 +448,7 @@ async function loadReport(days) {
 
 applyI18n();
 poll();
-setInterval(poll, 5000);
+setInterval(poll, 15000);
 loadReport(1);
 </script>
 </body>
