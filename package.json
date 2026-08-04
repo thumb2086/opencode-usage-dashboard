@@ -1,6 +1,6 @@
 {
   "name": "opencode-statboard",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Real-time dashboard for opencode token usage and cost statistics",
   "main": "server.js",
   "bin": {
@@ -9,7 +9,13 @@
   "scripts": {
     "start": "node server.js"
   },
-  "keywords": ["opencode", "dashboard", "tokens", "usage", "statistics"],
+  "keywords": [
+    "opencode",
+    "dashboard",
+    "tokens",
+    "usage",
+    "statistics"
+  ],
   "author": "thumb2086",
   "license": "MIT",
   "repository": {
