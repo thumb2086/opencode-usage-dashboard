@@ -54,12 +54,15 @@ function cleanExpiredCache(cache, ttl) {
 }
 
 async function generateTrend(days, retries = 2) {
-  const results = new Array(days);
+  const step = days > 30 ? 3 : 1;
+  const points = Math.ceil(days / step);
+  const results = new Array(points);
   let next = 0;
   const worker = async () => {
-    while (next < days) {
+    while (next < points) {
       const i = next++;
-      results[i] = await runStats(['stats', '--days', String(i + 1)]);
+      const d = i * step + 1;
+      results[i] = await runStats(['stats', '--days', String(Math.min(d, days))]);
     }
   };
   await Promise.all(Array.from({ length: 4 }, worker));
@@ -84,8 +87,9 @@ async function generateTrend(days, retries = 2) {
   const now = Date.now();
   return {
     generatedAt: now,
+    step,
     labels: buckets.map((_, i) => {
-      const d = new Date(now - i * 86400000);
+      const d = new Date(now - (i * step) * 86400000);
       return (d.getMonth() + 1) + '/' + d.getDate();
     }),
     sessions: buckets.map((b) => b.sessions),

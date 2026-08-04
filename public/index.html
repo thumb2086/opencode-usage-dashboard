@@ -54,6 +54,12 @@
   @media (max-width: 800px) { .two-col { grid-template-columns: 1fr; } }
   .error-banner { display: none; background: rgba(248,81,73,.1); border: 1px solid #da3633; color: #f85149; padding: 10px 14px; border-radius: 8px; margin-bottom: 16px; font-size: 13px; }
   .error-banner.show { display: block; }
+  details.tool-section { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 18px; margin-bottom: 18px; }
+  details.tool-section summary { cursor: pointer; list-style: none; display: flex; align-items: center; gap: 8px; }
+  details.tool-section summary::-webkit-details-marker { display: none; }
+  details.tool-section summary::before { content: '▸'; font-size: 12px; color: var(--muted); transition: transform .2s; }
+  details.tool-section[open] summary::before { transform: rotate(90deg); }
+  details.tool-section summary h2 { margin: 0; }
   .skeleton { background: linear-gradient(90deg, #21262d 25%, #30363d 50%, #21262d 75%); background-size: 200% 100%; animation: shimmer 1.5s infinite; border-radius: 4px; }
   @keyframes shimmer { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
   .skeleton-text { height: 1em; margin: 4px 0; }
@@ -100,10 +106,10 @@
   <div id="token-bars"></div>
 </section>
 
-<section>
-  <h2 data-i18n="toolUsage">TOOL USAGE</h2>
+<details class="tool-section" open>
+  <summary><h2 data-i18n="toolUsage">TOOL USAGE</h2></summary>
   <div id="tool-bars"></div>
-</section>
+</details>
 
 <section>
   <h2 data-i18n="modelUsage">MODEL USAGE</h2>
@@ -405,14 +411,14 @@ function formatReport(jr) {
   if (jr.providers && jr.providers.length) {
     out += 'PROVIDERS & MODELS\n';
     jr.providers.forEach((p) => {
-      out += '  ' + pad(p.provider + '/' + p.model, 45) + pad(p.sessions + ' sessions', 14) + '  ' + rpad(fmtCost(p.cost), 10) + '   ' + rpad(fmtT(p.tok_in), 8) + ' in / ' + rpad(fmtT(p.tok_out), 8) + ' out\n';
+      out += '  ' + pad(p.provider + '/' + p.model, 45) + pad(p.sessions + ' sessions', 14) + '  ' + rpad(fmtCost(p.cost), 10) + '   ' + rpad(fmtT(p.tok_in), 8) + ' in / ' + rpad(fmtT(p.tok_out), 8) + ' out  cache: ' + rpad(fmtT(p.cache_read), 8) + '\n';
     });
     out += '\n';
   }
   if (jr.agents && jr.agents.length) {
     out += 'AGENTS\n';
     jr.agents.forEach((a) => {
-      out += '  ' + pad(a.agent, 45) + pad(a.sessions + ' sessions', 14) + '  ' + rpad(fmtCost(a.cost), 10) + '   ' + rpad(fmtT(a.tok_in), 8) + ' in / ' + rpad(fmtT(a.tok_out), 8) + ' out\n';
+      out += '  ' + pad(a.agent, 45) + pad(a.sessions + ' sessions', 14) + '  ' + rpad(fmtCost(a.cost), 10) + '   ' + rpad(fmtT(a.tok_in), 8) + ' in / ' + rpad(fmtT(a.tok_out), 8) + ' out  cache: ' + rpad(fmtT(a.cache_read), 8) + '\n';
     });
   }
   return out || 'No data for this period.';
