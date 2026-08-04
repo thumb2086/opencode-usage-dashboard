@@ -355,14 +355,13 @@ setInterval(() => {
 }, CACHE_CLEANUP_MS);
 
 (async () => {
-  console.log('Loading initial stats...');
-  await refresh();
-  await refreshModels();
   server.listen(PORT, '127.0.0.1', () => {
     console.log(`opencode stats dashboard: http://127.0.0.1:${PORT}`);
   });
   setInterval(refresh, REFRESH_MS);
   setInterval(refreshModels, 60000);
+  await refresh();
+  await refreshModels();
   for (const d of [1, 7, 30]) {
     const r = await buildReport(d);
     if (r && r.stats && r.stats.ok) reportCache[String(d)] = Object.assign({}, r, { generatedAt: Date.now() });
