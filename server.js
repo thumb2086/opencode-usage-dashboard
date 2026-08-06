@@ -271,16 +271,22 @@ function parseTSV(text) {
 }
 
 async function buildReport(days) {
-  const label = days <= 1 ? 'Daily' : days <= 7 ? 'Weekly' : 'Monthly';
-  const timeFilter = days <= 1
+  const label = days === -1 ? 'All' : days <= 1 ? 'Daily' : days <= 7 ? 'Weekly' : 'Monthly';
+  const timeFilter = days === -1
+    ? '1=1'
+    : days <= 1
     ? `(strftime('%s','now','start of day') * 1000)`
     : days <= 7
     ? `(strftime('%s','now','start of day', '-${days - 1} day') * 1000)`
     : `(strftime('%s','now','start of month') * 1000)`;
-  let statsR = await runStats(['stats', '--days', String(Math.max(days, 1)), '--models', '20']);
+  let statsR = days === -1
+    ? await runStats(['stats', '--models', '20'])
+    : await runStats(['stats', '--days', String(Math.max(days, 1)), '--models', '20']);
   if (!statsR) {
     await new Promise((r) => setTimeout(r, 2000));
-    statsR = await runStats(['stats', '--days', String(Math.max(days, 1)), '--models', '20']);
+    statsR = days === -1
+      ? await runStats(['stats', '--models', '20'])
+      : await runStats(['stats', '--days', String(Math.max(days, 1)), '--models', '20']);
   }
   const [agentR, modelR] = await Promise.all([
     run(['db', `SELECT agent, COUNT(*) AS sessions, ROUND(SUM(cost),4) AS cost, SUM(tokens_input) AS tok_in, SUM(tokens_output) AS tok_out, SUM(tokens_cache_read) AS cache_read FROM session WHERE agent IS NOT NULL AND time_updated >= ${timeFilter} GROUP BY agent ORDER BY cost DESC;`, '--format', 'tsv']),
