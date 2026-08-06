@@ -56,13 +56,38 @@ function cleanExpiredCache(cache, ttl) {
 async function generateTrend(days, retries = 2) {
   const step = days > 30 ? 3 : 1;
   const points = Math.ceil(days / step);
+  const now = Date.now();
+  
+  async function getStatsForDay(dayOffset) {
+    const startOfDay = new Date();
+    startOfDay.setHours(0, 0, 0, 0);
+    startOfDay.setDate(startOfDay.getDate() - dayOffset);
+    const startMs = startOfDay.getTime();
+    
+    const r = await run(['db', `SELECT COUNT(*) AS sessions, COALESCE(SUM(tokens_input),0) AS input, COALESCE(SUM(tokens_output),0) AS output, COALESCE(SUM(tokens_cache_read),0) AS cacheRead, COALESCE(SUM(cost),0) AS total FROM session WHERE time_updated >= ${startMs};`, '--format', 'tsv']);
+    if (!r.ok) return null;
+    const rows = parseTSV(r.out);
+    if (!rows.length) return null;
+    const row = rows[0];
+    return {
+      overview: { sessions: parseInt(row.sessions) || 0, messages: 0 },
+      cost: {
+        total: parseFloat(row.total) || 0,
+        input: parseFloat(row.input) || 0,
+        output: parseFloat(row.output) || 0,
+        cacheRead: parseFloat(row.cacheRead) || 0,
+        cacheWrite: 0,
+      },
+    };
+  }
+  
   const results = new Array(points);
   let next = 0;
   const worker = async () => {
     while (next < points) {
       const i = next++;
-      const d = i * step + 1;
-      results[i] = await runStats(['stats', '--days', String(Math.min(d, days))]);
+      const dayOffset = (i + 1) * step - 1;
+      results[i] = await getStatsForDay(dayOffset);
     }
   };
   await Promise.all(Array.from({ length: 4 }, worker));
@@ -73,18 +98,16 @@ async function generateTrend(days, retries = 2) {
     }
     return null;
   }
-  const rows = results;
-  const first = rows[0];
-  const buckets = [{
-    sessions: first.overview.sessions,
-    messages: first.overview.messages,
-    total: first.cost.total,
-    input: first.cost.input,
-    output: first.cost.output,
-    cacheRead: first.cost.cacheRead,
-  }];
-  for (let i = 1; i < rows.length; i++) buckets.push(sub(rows[i], rows[i - 1]));
-  const now = Date.now();
+  
+  const buckets = results.map((r) => ({
+    sessions: r.overview.sessions,
+    messages: r.overview.messages,
+    total: r.cost.total,
+    input: r.cost.input,
+    output: r.cost.output,
+    cacheRead: r.cost.cacheRead,
+  }));
+  
   return {
     generatedAt: now,
     step,
@@ -261,7 +284,11 @@ async function buildReport(days) {
   const label = days === 0 ? 'Today' : days <= 1 ? 'Daily' : days <= 7 ? 'Weekly' : 'Monthly';
   const timeFilter = days === 0
     ? `(strftime('%s','now','start of day') * 1000)`
-    : `(strftime('%s','now','-${days} day') * 1000)`;
+    : days <= 1
+    ? `(strftime('%s','now','start of day') * 1000)`
+    : days <= 7
+    ? `(strftime('%s','now','start of day', '-${days - 1} day') * 1000)`
+    : `(strftime('%s','now','start of month') * 1000)`;
   let statsR = await runStats(['stats', '--days', String(Math.max(days, 1)), '--models', '20']);
   if (!statsR) {
     await new Promise((r) => setTimeout(r, 2000));
