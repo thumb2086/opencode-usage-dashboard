@@ -58,7 +58,7 @@ async function generateTrend(days, retries = 2) {
   const points = Math.ceil(days / step);
   const now = Date.now();
   
-  async function getStatsForDay(dayOffset) {
+  async function getCumulativeUntil(dayOffset) {
     const startOfDay = new Date();
     startOfDay.setHours(0, 0, 0, 0);
     startOfDay.setDate(startOfDay.getDate() - dayOffset);
@@ -70,28 +70,24 @@ async function generateTrend(days, retries = 2) {
     if (!rows.length) return null;
     const row = rows[0];
     return {
-      overview: { sessions: parseInt(row.sessions) || 0, messages: 0 },
-      cost: {
-        total: parseFloat(row.total) || 0,
-        input: parseFloat(row.input) || 0,
-        output: parseFloat(row.output) || 0,
-        cacheRead: parseFloat(row.cacheRead) || 0,
-        cacheWrite: 0,
-      },
+      sessions: parseInt(row.sessions) || 0,
+      input: parseFloat(row.input) || 0,
+      output: parseFloat(row.output) || 0,
+      cacheRead: parseFloat(row.cacheRead) || 0,
+      total: parseFloat(row.total) || 0,
     };
   }
   
-  const results = new Array(points);
+  const cumulative = new Array(points + 1);
   let next = 0;
   const worker = async () => {
-    while (next < points) {
+    while (next <= points) {
       const i = next++;
-      const dayOffset = (i + 1) * step - 1;
-      results[i] = await getStatsForDay(dayOffset);
+      cumulative[i] = await getCumulativeUntil(i * step);
     }
   };
   await Promise.all(Array.from({ length: 4 }, worker));
-  if (results.some((r) => !r)) {
+  if (cumulative.some((r) => !r)) {
     if (retries > 0) {
       await new Promise((r) => setTimeout(r, 1000));
       return generateTrend(days, retries - 1);
@@ -99,14 +95,18 @@ async function generateTrend(days, retries = 2) {
     return null;
   }
   
-  const buckets = results.map((r) => ({
-    sessions: r.overview.sessions,
-    messages: r.overview.messages,
-    total: r.cost.total,
-    input: r.cost.input,
-    output: r.cost.output,
-    cacheRead: r.cost.cacheRead,
-  }));
+  const buckets = [];
+  for (let i = 0; i < points; i++) {
+    const cur = cumulative[i];
+    const prev = cumulative[i + 1];
+    buckets.push({
+      sessions: cur.sessions - prev.sessions,
+      input: cur.input - prev.input,
+      output: cur.output - prev.output,
+      cacheRead: cur.cacheRead - prev.cacheRead,
+      total: cur.total - prev.total,
+    });
+  }
   
   return {
     generatedAt: now,
@@ -116,7 +116,6 @@ async function generateTrend(days, retries = 2) {
       return (d.getMonth() + 1) + '/' + d.getDate();
     }),
     sessions: buckets.map((b) => b.sessions),
-    messages: buckets.map((b) => b.messages),
     input: buckets.map((b) => b.input),
     output: buckets.map((b) => b.output),
     cacheRead: buckets.map((b) => b.cacheRead),
