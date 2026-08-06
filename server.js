@@ -58,13 +58,17 @@ async function generateTrend(days, retries = 2) {
   const points = Math.ceil(days / step);
   const now = Date.now();
   
-  async function getCumulativeUntil(dayOffset) {
+  async function getDailyStats(dayOffset) {
     const startOfDay = new Date();
     startOfDay.setHours(0, 0, 0, 0);
     startOfDay.setDate(startOfDay.getDate() - dayOffset);
     const startMs = startOfDay.getTime();
     
-    const r = await run(['db', `SELECT COUNT(*) AS sessions, COALESCE(SUM(tokens_input),0) AS input, COALESCE(SUM(tokens_output),0) AS output, COALESCE(SUM(tokens_cache_read),0) AS cacheRead, COALESCE(SUM(cost),0) AS total FROM session WHERE time_updated >= ${startMs};`, '--format', 'tsv']);
+    const endOfDay = new Date(startOfDay);
+    endOfDay.setDate(endOfDay.getDate() + 1);
+    const endMs = endOfDay.getTime();
+    
+    const r = await run(['db', `SELECT COUNT(*) AS sessions, COALESCE(SUM(tokens_input),0) AS input, COALESCE(SUM(tokens_output),0) AS output, COALESCE(SUM(tokens_cache_read),0) AS cacheRead, COALESCE(SUM(cost),0) AS total FROM session WHERE time_updated >= ${startMs} AND time_updated < ${endMs};`, '--format', 'tsv']);
     if (!r.ok) return null;
     const rows = parseTSV(r.out);
     if (!rows.length) return null;
@@ -78,16 +82,16 @@ async function generateTrend(days, retries = 2) {
     };
   }
   
-  const cumulative = new Array(points + 1);
+  const results = new Array(points);
   let next = 0;
   const worker = async () => {
-    while (next <= points) {
+    while (next < points) {
       const i = next++;
-      cumulative[i] = await getCumulativeUntil(i * step);
+      results[i] = await getDailyStats(i * step);
     }
   };
   await Promise.all(Array.from({ length: 4 }, worker));
-  if (cumulative.some((r) => !r)) {
+  if (results.some((r) => !r)) {
     if (retries > 0) {
       await new Promise((r) => setTimeout(r, 1000));
       return generateTrend(days, retries - 1);
@@ -95,31 +99,18 @@ async function generateTrend(days, retries = 2) {
     return null;
   }
   
-  const buckets = [];
-  for (let i = 0; i < points; i++) {
-    const cur = cumulative[i];
-    const prev = cumulative[i + 1];
-    buckets.push({
-      sessions: cur.sessions - prev.sessions,
-      input: cur.input - prev.input,
-      output: cur.output - prev.output,
-      cacheRead: cur.cacheRead - prev.cacheRead,
-      total: cur.total - prev.total,
-    });
-  }
-  
   return {
     generatedAt: now,
     step,
-    labels: buckets.map((_, i) => {
+    labels: results.map((_, i) => {
       const d = new Date(now - (i * step) * 86400000);
       return (d.getMonth() + 1) + '/' + d.getDate();
     }),
-    sessions: buckets.map((b) => b.sessions),
-    input: buckets.map((b) => b.input),
-    output: buckets.map((b) => b.output),
-    cacheRead: buckets.map((b) => b.cacheRead),
-    cost: buckets.map((b) => b.total),
+    sessions: results.map((b) => b.sessions),
+    input: results.map((b) => b.input),
+    output: results.map((b) => b.output),
+    cacheRead: results.map((b) => b.cacheRead),
+    cost: results.map((b) => b.total),
   };
 }
 
