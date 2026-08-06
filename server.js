@@ -271,10 +271,8 @@ function parseTSV(text) {
 }
 
 async function buildReport(days) {
-  const label = days === 0 ? 'Today' : days <= 1 ? 'Daily' : days <= 7 ? 'Weekly' : 'Monthly';
-  const timeFilter = days === 0
-    ? `(strftime('%s','now','start of day') * 1000)`
-    : days <= 1
+  const label = days <= 1 ? 'Daily' : days <= 7 ? 'Weekly' : 'Monthly';
+  const timeFilter = days <= 1
     ? `(strftime('%s','now','start of day') * 1000)`
     : days <= 7
     ? `(strftime('%s','now','start of day', '-${days - 1} day') * 1000)`

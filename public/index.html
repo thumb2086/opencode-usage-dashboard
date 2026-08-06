@@ -154,8 +154,7 @@
   <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
     <h2 data-i18n="report" style="margin:0">USAGE REPORT</h2>
     <div class="range-btns" id="reportBtns">
-      <span class="pill active" data-days="0" onclick="loadReport(0)" data-i18n="today">Today</span>
-      <span class="pill" data-days="1" onclick="loadReport(1)" data-i18n="daily">Daily</span>
+      <span class="pill active" data-days="1" onclick="loadReport(1)" data-i18n="daily">Daily</span>
       <span class="pill" data-days="7" onclick="loadReport(7)" data-i18n="weekly">Weekly</span>
       <span class="pill" data-days="30" onclick="loadReport(30)" data-i18n="monthly">Monthly</span>
     </div>
@@ -175,7 +174,7 @@ const STRINGS = {
     thModel: 'Model', thMsgs: 'Messages', thUsage: 'Usage', thCost: 'Cost',
     dailyTrend: 'DAILY TREND ({days} DAYS)',
     inputDay: 'Input / Day', outputDay: 'Output / Day', cacheReadDay: 'Cache Read / Day', costDay: 'Cost / Day',
-    report: 'USAGE REPORT', today: 'Today', daily: 'Daily', weekly: 'Weekly', monthly: 'Monthly',
+    report: 'USAGE REPORT', daily: 'Daily', weekly: 'Weekly', monthly: 'Monthly',
     updating: 'updating…', generating: 'Generating trend data…', cachedAt: 'cached at', allFree: 'All models free — no cost recorded',
     live: 'Live', loading: 'Loading…', lastUpdated: 'Last updated', dataAgo: 'data generated',
     statsFail: 'Failed to read opencode stats', connFail: 'Connection failed',
@@ -191,7 +190,7 @@ const STRINGS = {
     thModel: '模型', thMsgs: '訊息', thUsage: '用量', thCost: '費用',
     dailyTrend: '近 {days} 天趨勢',
     inputDay: 'Input / 天', outputDay: 'Output / 天', cacheReadDay: 'Cache Read / 天', costDay: '費用 / 天',
-    report: '用量報告', today: '今天', daily: '每日', weekly: '每週', monthly: '每月',
+    report: '用量報告', daily: '每日', weekly: '每週', monthly: '每月',
     updating: '更新中…', generating: '趨勢資料產生中…', cachedAt: '快取於', allFree: '全部使用免費模型，無費用紀錄',
     live: '即時更新', loading: '載入中…', lastUpdated: '更新於', dataAgo: '數據產生於',
     statsFail: 'opencode stats 讀取失敗', connFail: '連線失敗',
@@ -456,7 +455,7 @@ async function loadReport(days) {
 applyI18n();
 poll();
 setInterval(poll, 15000);
-loadReport(0);
+loadReport(1);
 </script>
 </body>
 </html>
