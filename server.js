@@ -316,7 +316,8 @@ const server = http.createServer(async (req, res) => {
       trendReady: !!r.trend,
     }));
   } else if (u === '/api/report') {
-    const days = parseInt(url.searchParams.get('days') || '1', 10) || 1;
+    const daysParam = url.searchParams.get('days');
+    const days = daysParam !== null ? (parseInt(daysParam, 10) || 0) : 0;
     const r = refreshReport(days);
     res.setHeader('Content-Type', 'application/json; charset=utf-8');
     res.setHeader('Cache-Control', 'no-store');
