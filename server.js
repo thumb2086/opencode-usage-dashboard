@@ -258,15 +258,18 @@ function parseTSV(text) {
 }
 
 async function buildReport(days) {
-  const label = days <= 1 ? 'Daily' : days <= 7 ? 'Weekly' : 'Monthly';
-  let statsR = await runStats(['stats', '--days', String(days), '--models', '20']);
+  const label = days === 0 ? 'Today' : days <= 1 ? 'Daily' : days <= 7 ? 'Weekly' : 'Monthly';
+  const timeFilter = days === 0
+    ? `(strftime('%s','now','start of day') * 1000)`
+    : `(strftime('%s','now','-${days} day') * 1000)`;
+  let statsR = await runStats(['stats', '--days', String(Math.max(days, 1)), '--models', '20']);
   if (!statsR) {
     await new Promise((r) => setTimeout(r, 2000));
-    statsR = await runStats(['stats', '--days', String(days), '--models', '20']);
+    statsR = await runStats(['stats', '--days', String(Math.max(days, 1)), '--models', '20']);
   }
   const [agentR, modelR] = await Promise.all([
-    run(['db', `SELECT agent, COUNT(*) AS sessions, ROUND(SUM(cost),4) AS cost, SUM(tokens_input) AS tok_in, SUM(tokens_output) AS tok_out, SUM(tokens_cache_read) AS cache_read FROM session WHERE agent IS NOT NULL AND time_updated >= (strftime('%s','now','-${days} day') * 1000) GROUP BY agent ORDER BY cost DESC;`, '--format', 'tsv']),
-    run(['db', `SELECT json_extract(model,'$.providerID') AS provider, json_extract(model,'$.id') AS model, COUNT(*) AS sessions, ROUND(SUM(cost),4) AS cost, SUM(tokens_input) AS tok_in, SUM(tokens_output) AS tok_out, SUM(tokens_cache_read) AS cache_read FROM session WHERE model IS NOT NULL AND time_updated >= (strftime('%s','now','-${days} day') * 1000) GROUP BY provider, model ORDER BY cost DESC;`, '--format', 'tsv']),
+    run(['db', `SELECT agent, COUNT(*) AS sessions, ROUND(SUM(cost),4) AS cost, SUM(tokens_input) AS tok_in, SUM(tokens_output) AS tok_out, SUM(tokens_cache_read) AS cache_read FROM session WHERE agent IS NOT NULL AND time_updated >= ${timeFilter} GROUP BY agent ORDER BY cost DESC;`, '--format', 'tsv']),
+    run(['db', `SELECT json_extract(model,'$.providerID') AS provider, json_extract(model,'$.id') AS model, COUNT(*) AS sessions, ROUND(SUM(cost),4) AS cost, SUM(tokens_input) AS tok_in, SUM(tokens_output) AS tok_out, SUM(tokens_cache_read) AS cache_read FROM session WHERE model IS NOT NULL AND time_updated >= ${timeFilter} GROUP BY provider, model ORDER BY cost DESC;`, '--format', 'tsv']),
   ]);
   return {
     label: label,
