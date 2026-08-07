@@ -353,6 +353,12 @@ async function poll() {
   try {
     const r = await fetch('/api/stats?days=' + currentDays + '&_=' + Date.now(), { cache: 'no-store' });
     const j = await r.json();
+    if (j.loading) {
+      $('pill').textContent = t('updating');
+      $('pill').className = 'pill lang';
+      $('updated').textContent = t('updating');
+      return;
+    }
     if (!j.ok) {
       $('errbanner').textContent = t('statsFail') + ': ' + (j.error || '');
       $('errbanner').classList.add('show');

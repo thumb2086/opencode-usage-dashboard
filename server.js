@@ -18,7 +18,7 @@ const EXE = (() => {
   return 'opencode';
 })();
 
-const state = { data: null, busy: false, error: null, updatedAt: 0, models: null, modelsBusy: false };
+const state = { data: null, busy: false, error: null, updatedAt: 0, models: null, modelsBusy: false, loading: true };
 
 let indexHtmlCache = null;
 
@@ -223,6 +223,7 @@ async function refresh() {
   } else {
     state.error = state.error || 'opencode stats failed';
   }
+  state.loading = false;
   state.busy = false;
 }
 
@@ -329,6 +330,7 @@ const server = http.createServer(async (req, res) => {
     res.setHeader('Cache-Control', 'no-store');
     res.end(JSON.stringify({
       ok: !!state.data,
+      loading: state.loading,
       error: state.error,
       generatedAt: state.updatedAt,
       data: state.data,
