@@ -401,7 +401,7 @@ function formatReport(jr) {
   const rpad = (s, w) => { s = String(s); return s.length >= w ? s : ' '.repeat(w - s.length) + s; };
   let out = '';
   out += 'OPENCODE USAGE STATEMENT\n';
-  out += 'Period: ' + jr.label + '  |  Last ' + jr.days + ' day(s)' + cachedNote + '\n';
+  out += 'Period: ' + jr.label + (jr.days >= 0 ? '  |  Last ' + jr.days + ' day(s)' : '') + cachedNote + '\n';
   out += '---\n';
   const s = jr.stats;
   if (s && s.ok) {
