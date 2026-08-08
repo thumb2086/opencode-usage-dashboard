@@ -66,13 +66,14 @@
   .skeleton-card { height: 60px; }
   .trend-bar { position: absolute; bottom: 0; border-radius: 2px 2px 0 0; transition: height .4s ease; }
   .trend-bar-cache { left: 0; right: 0; opacity: .2; }
+  .version { font-size: 11px; color: var(--muted); background: var(--panel); border: 1px solid var(--border); padding: 2px 8px; border-radius: 4px; }
   .trend-bar-input { left: 25%; width: 22%; z-index: 1; }
   .trend-bar-output { left: 53%; width: 22%; z-index: 1; }
 </style>
 </head>
 <body>
 <header>
-  <h1><span class="dot">●</span> <span data-i18n="title">opencode Dashboard</span></h1>
+  <h1><span class="dot">●</span> <span data-i18n="title">opencode Dashboard</span> <span class="version">v__VERSION__</span></h1>
   <div class="status">
     <span id="updated">Loading…</span>
     <span class="pill ok" id="pill" data-i18n="live">Live</span>

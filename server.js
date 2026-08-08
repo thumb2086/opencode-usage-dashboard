@@ -9,6 +9,8 @@ const REFRESH_MS = 15000;
 const TREND_MS = 10 * 60 * 1000;
 const REPORT_TTL = 10 * 60 * 1000;
 const CACHE_CLEANUP_MS = 5 * 60 * 1000;
+const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8'));
+const VERSION = pkg.version;
 
 const EXE = (() => {
   const candidates = [
@@ -357,7 +359,7 @@ const server = http.createServer(async (req, res) => {
         return;
       }
       res.setHeader('Content-Type', 'text/html; charset=utf-8');
-      res.end(data);
+      res.end(data.replace('__VERSION__', VERSION));
     });
   } else {
     res.statusCode = 404;
