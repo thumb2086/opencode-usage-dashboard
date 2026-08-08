@@ -291,7 +291,7 @@ async function buildReport(days) {
   }
   const [agentR, modelR] = await Promise.all([
     run(['db', `SELECT agent, COUNT(*) AS sessions, ROUND(SUM(cost),4) AS cost, SUM(tokens_input) AS tok_in, SUM(tokens_output) AS tok_out, SUM(tokens_cache_read) AS cache_read FROM session WHERE agent IS NOT NULL AND time_updated >= ${timeFilter} GROUP BY agent ORDER BY cost DESC;`, '--format', 'tsv']),
-    run(['db', `SELECT json_extract(model,'$.providerID') AS provider, json_extract(model,'$.id') AS model, COUNT(*) AS sessions, ROUND(SUM(cost),4) AS cost, SUM(tokens_input) AS tok_in, SUM(tokens_output) AS tok_out, SUM(tokens_cache_read) AS cache_read FROM session WHERE model IS NOT NULL AND time_updated >= ${timeFilter} GROUP BY provider, model ORDER BY cost DESC;`, '--format', 'tsv']),
+    run(['db', `SELECT COALESCE(json_extract(model,'$.providerID'), 'unknown') AS provider, COALESCE(json_extract(model,'$.id'), 'unknown') AS model, COUNT(*) AS sessions, ROUND(SUM(cost),4) AS cost, SUM(tokens_input) AS tok_in, SUM(tokens_output) AS tok_out, SUM(tokens_cache_read) AS cache_read FROM session WHERE time_updated >= ${timeFilter} GROUP BY provider, model ORDER BY cost DESC;`, '--format', 'tsv']),
   ]);
   return {
     label: label,
