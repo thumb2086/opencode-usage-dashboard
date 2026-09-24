@@ -1,0 +1,34 @@
+# npm trusted publishing (OIDC) — no token needed.
+# Requires: npmjs.com → opencode-statboard → Settings → Trusted Publisher →
+#   GitHub Actions: org `thumb2086`, repo `opencode-usage-dashboard`,
+#   workflow filename `publish.yml`, no environment,
+#   Allowed actions: enable BOTH `npm stage publish` AND `npm publish`.
+name: Publish Package
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  id-token: write   # required for OIDC token exchange with npm
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          registry-url: 'https://registry.npmjs.org'
+          package-manager-cache: false # never use caching in release builds
+      - run: npm ci
+      - run: npm test
+      # Fail fast if the tag and package.json version disagree, so the tag
+      # always identifies exactly what gets published.
+      - run: node -e "const v=require('./package.json').version; const t=process.env.GITHUB_REF_NAME; if (t !== 'v'+v) { console.error('tag '+t+' != package.json v'+v); process.exit(1); }"
+      # OIDC auth is automatic with npm >= 11.5.1; provenance is generated
+      # automatically for public repos — no token, no --provenance flag.
+      - run: npm publish

@@ -1,13 +1,14 @@
 {
   "name": "opencode-statboard",
-  "version": "1.0.12",
+  "version": "2.0.9",
   "description": "Real-time dashboard for opencode token usage and cost statistics",
   "main": "server.js",
   "bin": {
     "opencode-dashboard": "server.js"
   },
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "test": "node --check server.js && node --check check-lib.js && node --check check-stats-verify.js && node --check check-trend-verify.js && node --check check-report-verify.js"
   },
   "keywords": [
     "opencode",
@@ -20,6 +21,9 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/thumb2086/opencode-usage-dashboard"
+    "url": "git+https://github.com/thumb2086/opencode-usage-dashboard.git"
+  },
+  "dependencies": {
+    "better-sqlite3": "^13.0.3"
   }
 }

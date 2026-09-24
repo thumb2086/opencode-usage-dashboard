@@ -20,6 +20,9 @@
   .pill.err { color: #f85149; border-color: #da3633; background: rgba(248,81,73,.08); }
   .pill.lang { color: var(--text); border-color: var(--border); background: rgba(139,148,158,.08); }
   .pill.lang:hover { background: rgba(139,148,158,.18); }
+  .pill.backup { color: var(--cache); border-color: var(--cache); background: rgba(210,153,34,.08); }
+  .pill.backup:hover { background: rgba(210,153,34,.18); }
+  .pill.backup.busy { opacity: .6; pointer-events: none; }
   .range-btns { display: flex; gap: 4px; }
   .range-btns .pill.active { color: var(--text); border-color: #58a6ff; background: rgba(88,166,255,.12); }
   .range-btns .pill:not(.active) { color: var(--muted); border-color: var(--border); background: transparent; }
@@ -50,6 +53,8 @@
   .chart .bars > div { border-radius: 2px 2px 0 0; min-width: 4px; transition: height .4s ease; }
   .chart .x { font-size: 10px; color: var(--muted); line-height: 1; }
   .chart .tip { font-size: 10px; color: var(--muted); line-height: 1.2; text-align: center; }
+  .trend-x { display: flex; height: 16px; margin-top: 4px; }
+  .trend-x span { flex: 1; text-align: center; font-size: 10px; color: var(--muted); line-height: 16px; overflow: hidden; text-overflow: clip; white-space: nowrap; }
   .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
   @media (max-width: 800px) { .two-col { grid-template-columns: 1fr; } }
   .error-banner { display: none; background: rgba(248,81,73,.1); border: 1px solid #da3633; color: #f85149; padding: 10px 14px; border-radius: 8px; margin-bottom: 16px; font-size: 13px; }
@@ -69,6 +74,7 @@
   .version { font-size: 11px; color: var(--muted); background: var(--panel); border: 1px solid var(--border); padding: 2px 8px; border-radius: 4px; }
   .trend-bar-input { left: 25%; width: 22%; z-index: 1; }
   .trend-bar-output { left: 53%; width: 22%; z-index: 1; }
+  .trend-bar-reasoning { left: 76%; width: 22%; z-index: 1; }
 </style>
 </head>
 <body>
@@ -78,6 +84,7 @@
     <span id="updated">Loading…</span>
     <span class="pill ok" id="pill" data-i18n="live">Live</span>
     <span class="pill lang" id="langBtn" onclick="toggleLang()"></span>
+    <span class="pill backup" id="backupBtn" onclick="backupDb()" data-i18n="backup">Backup DB</span>
   </div>
 </header>
 
@@ -101,6 +108,7 @@
   <div class="legend">
     <span><i class="sw" style="background:var(--in)"></i>Input</span>
     <span><i class="sw" style="background:var(--out)"></i>Output</span>
+    <span><i class="sw" style="background:var(--tool)"></i>Reasoning</span>
     <span><i class="sw" style="background:var(--cache)"></i>Cache Read</span>
     <span><i class="sw" style="background:var(--cost)"></i>Cache Write</span>
   </div>
@@ -136,16 +144,17 @@
       <div class="legend">
         <span><i class="sw" style="background:var(--in)"></i><span data-i18n="inputDay">Input / Day</span></span>
         <span><i class="sw" style="background:var(--out)"></i><span data-i18n="outputDay">Output / Day</span></span>
+        <span><i class="sw" style="background:var(--tool)"></i>Reasoning / Day</span>
         <span><i class="sw" style="background:var(--cache)"></i><span data-i18n="cacheReadDay">Cache Read / Day</span></span>
         <span id="trendStatus" style="color:var(--cache);font-size:11px"></span>
       </div>
       <div class="chart" id="trendTokensChart"><div class="bars" id="trend-tokens"></div></div>
-      <div class="bars" id="trend-token-x" style="height:auto;display:flex;justify-content:space-around;margin-top:4px"></div>
+      <div class="trend-x" id="trend-token-x"></div>
     </div>
     <div id="costSection" style="flex:1;min-width:200px">
       <div class="legend"><span><i class="sw" style="background:var(--cost)"></i><span data-i18n="costDay">Cost / Day</span></span></div>
       <div class="chart" id="trendCostChart"><div class="bars" id="trend-cost"></div></div>
-      <div class="bars" id="trend-cost-x" style="height:auto;display:flex;justify-content:space-around;margin-top:4px"></div>
+      <div class="trend-x" id="trend-cost-x"></div>
       <div id="costZeroNote" style="display:none;font-size:12px;color:var(--muted);padding:20px 0;text-align:center"></div>
     </div>
   </div>
@@ -181,6 +190,7 @@ const STRINGS = {
     live: 'Live', loading: 'Loading…', lastUpdated: 'Last updated', dataAgo: 'data generated',
     statsFail: 'Failed to read opencode stats', connFail: 'Connection failed',
     langBtn: '繁中',
+    backup: 'Backup DB', backingUp: 'Backing up…', backupFail: 'Backup failed',
   },
   'zh-TW': {
     title: 'opencode 用量儀表板',
@@ -197,6 +207,7 @@ const STRINGS = {
     live: '即時更新', loading: '載入中…', lastUpdated: '更新於', dataAgo: '數據產生於',
     statsFail: 'opencode stats 讀取失敗', connFail: '連線失敗',
     langBtn: 'EN',
+    backup: '備份 DB', backingUp: '備份中…', backupFail: '備份失敗',
   }
 };
 
@@ -219,6 +230,28 @@ function toggleLang() {
   lang = lang === 'en' ? 'zh-TW' : 'en';
   localStorage.setItem('lang', lang);
   applyI18n();
+}
+
+async function backupDb() {
+  const btn = $('backupBtn');
+  btn.classList.add('busy');
+  btn.textContent = t('backingUp');
+  try {
+    const r = await fetch('/api/backup', { cache: 'no-store' });
+    const j = await r.json();
+    if (j.ok && j.file) {
+      btn.textContent = '✓ ' + j.file;
+      btn.title = (j.size / 1024 / 1024).toFixed(1) + ' MB';
+    } else {
+      btn.textContent = '✗ ' + t('backupFail');
+      btn.title = j.error || '';
+    }
+  } catch (e) {
+    btn.textContent = '✗ ' + t('backupFail');
+    btn.title = e.message;
+  }
+  btn.classList.remove('busy');
+  setTimeout(() => { btn.textContent = t('backup'); }, 5000);
 }
 
 const $ = (id) => document.getElementById(id);
@@ -251,11 +284,12 @@ function render(d, models, trend) {
   $('ov-med').textContent = fmt(d.cost && d.cost.medianTokensSession);
 
   if (d.cost) {
-    const vals = [d.cost.input, d.cost.output, d.cost.cacheRead, d.cost.cacheWrite];
+    const vals = [d.cost.input, d.cost.output, d.cost.reasoning, d.cost.cacheRead, d.cost.cacheWrite];
     const max = Math.max(...vals.filter(Number.isFinite));
     $('token-bars').innerHTML =
       barRow('Input', d.cost.input, max, 'var(--in)') +
       barRow('Output', d.cost.output, max, 'var(--out)') +
+      barRow('Reasoning', d.cost.reasoning, max, 'var(--tool)') +
       barRow('Cache Read', d.cost.cacheRead, max, 'var(--cache)') +
       barRow('Cache Write', d.cost.cacheWrite, max, 'var(--cost)');
   }
@@ -264,7 +298,7 @@ function render(d, models, trend) {
     $('tool-bars').innerHTML = d.tools.map((tool) => barRow(tool.name, tool.count, d.tools[0].count, 'var(--tool)')).join('');
   }
 
-  const modelList = (models && models.length ? models : (d.models || []));
+  const modelList = (models && models.length ? models : (d.models || [])).slice().sort((a, b) => b.cost - a.cost || b.messages - a.messages);
   if (modelList.length) {
     const total = modelList.reduce((s, m) => s + m.input, 0);
     $('model-rows').innerHTML = modelList.map((m) => {
@@ -301,46 +335,63 @@ function render(d, models, trend) {
 
 function renderTrend(data) {
   const n = data.labels.length;
-  const maxAll = Math.max(...data.input, ...data.output, ...data.cacheRead);
-  const hasCost = data.cost.some((v) => v > 0);
+  const maxAll = Math.max(...data.input, ...data.output, ...(data.reasoning || []), ...data.cacheRead);
+  const hasCost = data.cost.some((v) => v >= 0.0001);
 
   $('trend-tokens').innerHTML = data.labels.map((l, i) => {
     const hi = maxAll > 0 ? (data.input[i] / maxAll) * 100 : 0;
     const ho = maxAll > 0 ? (data.output[i] / maxAll) * 100 : 0;
+    const hr = maxAll > 0 && data.reasoning ? (data.reasoning[i] / maxAll) * 100 : 0;
     const hc = maxAll > 0 ? (data.cacheRead[i] / maxAll) * 100 : 0;
-    const tip = l + ': In ' + fmt(data.input[i]) + ' · Out ' + fmt(data.output[i]) + ' · Cache ' + fmt(data.cacheRead[i]);
+    const tip = l + ': In ' + fmt(data.input[i]) + ' · Out ' + fmt(data.output[i]) + ' · Reas ' + fmt(data.reasoning ? data.reasoning[i] : 0) + ' · Cache ' + fmt(data.cacheRead[i]);
     return `<div class="col" title="${tip}">
       <div style="display:flex;gap:2px;align-items:flex-end;width:100%;height:170px;justify-content:center">
         <div style="position:relative;width:100%;height:100%">
           <div class="trend-bar trend-bar-cache" style="height:${Math.max(hc, 1)}%;background:var(--cache)"></div>
           <div class="trend-bar trend-bar-input" style="height:${Math.max(hi, 1)}%;background:var(--in)"></div>
           <div class="trend-bar trend-bar-output" style="height:${Math.max(ho, 1)}%;background:var(--out)"></div>
+          <div class="trend-bar trend-bar-reasoning" style="height:${Math.max(hr, 1)}%;background:var(--tool)"></div>
         </div>
       </div>
     </div>`;
   }).join('');
 
   const labelStep = Math.max(1, Math.ceil(n / 14));
-  $('trend-token-x').innerHTML = data.labels.map((l, i) =>
-    `<span class="x" style="flex:1;text-align:center;${i % labelStep === 0 ? '' : 'visibility:hidden'}">${l}</span>`).join('');
+  $('trend-token-x').innerHTML = data.labels.map((l, i) => {
+    const vis = i % labelStep === 0 ? '' : 'visibility:hidden';
+    return `<span style="${vis}">${l}</span>`;
+  }).join('');
 
   if (hasCost) {
     $('costSection').querySelector('.legend').style.display = '';
     $('trendCostChart').style.display = '';
     $('trend-cost-x').style.display = '';
     $('costZeroNote').style.display = 'none';
-    const maxCost = Math.max(...data.cost);
-    $('trend-cost').innerHTML = data.labels.map((l, i) => {
-      const h = maxCost > 0 ? (data.cost[i] / maxCost) * 100 : 0;
-      const tip = l + ': $' + (data.cost[i] || 0).toFixed(2);
-      return `<div class="col" title="${tip}">
-        <div style="display:flex;align-items:flex-end;width:100%;height:170px;justify-content:center">
-          <div style="width:50%;height:${Math.max(h, 1)}%;background:var(--cost);border-radius:2px 2px 0 0"></div>
-        </div>
-      </div>`;
-    }).join('');
-    $('trend-cost-x').innerHTML = data.labels.map((l, i) =>
-      `<span class="x" style="flex:1;text-align:center;${i % labelStep === 0 ? '' : 'visibility:hidden'}">${l}</span>`).join('');
+    const costThreshold = 0.0001;
+    const displayCost = data.cost.map((v) => v < costThreshold ? 0 : v);
+    const hasRealCost = displayCost.some((v) => v > 0);
+    if (!hasRealCost) {
+      $('costSection').querySelector('.legend').style.display = 'none';
+      $('trendCostChart').style.display = 'none';
+      $('trend-cost-x').style.display = 'none';
+      $('costZeroNote').style.display = '';
+      $('costZeroNote').textContent = t('allFree');
+    } else {
+      const maxCost = Math.max(...displayCost);
+      $('trend-cost').innerHTML = data.labels.map((l, i) => {
+        const h = maxCost > 0 ? (displayCost[i] / maxCost) * 100 : 0;
+        const tip = l + ': $' + (displayCost[i] || 0).toFixed(4);
+        return `<div class="col" title="${tip}">
+          <div style="display:flex;align-items:flex-end;width:100%;height:170px;justify-content:center">
+            <div style="width:50%;height:${Math.max(h, 1)}%;background:var(--cost);border-radius:2px 2px 0 0"></div>
+          </div>
+        </div>`;
+      }).join('');
+      $('trend-cost-x').innerHTML = data.labels.map((l, i) => {
+        const vis = i % labelStep === 0 ? '' : 'visibility:hidden';
+        return `<span style="${vis}">${l}</span>`;
+      }).join('');
+    }
   } else {
     $('costSection').querySelector('.legend').style.display = 'none';
     $('trendCostChart').style.display = 'none';
@@ -402,7 +453,8 @@ function formatReport(jr) {
   const rpad = (s, w) => { s = String(s); return s.length >= w ? s : ' '.repeat(w - s.length) + s; };
   let out = '';
   out += 'OPENCODE USAGE STATEMENT\n';
-  out += 'Period: ' + jr.label + (jr.days >= 0 ? '  |  Last ' + jr.days + ' day(s)' : '') + cachedNote + '\n';
+  const periodText = jr.days === -1 ? 'All time' : jr.days <= 1 ? 'Today (local)' : jr.days <= 7 ? 'Last 7 days (local)' : 'Month to date (local)';
+  out += 'Period: ' + jr.label + '  |  ' + periodText + cachedNote + '\n';
   out += '---\n';
   const s = jr.stats;
   if (s && s.ok) {
@@ -413,6 +465,7 @@ function formatReport(jr) {
     out += '  Messages ........... ' + (o.messages || 0) + '\n';
     out += '  Total Cost ......... $' + (c.total || 0).toFixed(2) + '\n';
     out += '  Tokens In/Out ...... ' + fmtT(c.input) + ' / ' + fmtT(c.output) + '\n';
+    out += '  Tokens Reasoning ... ' + fmtT(c.reasoning) + '\n';
     out += '  Cache Read/Write ... ' + fmtT(c.cacheRead) + ' / ' + fmtT(c.cacheWrite) + '\n';
     out += '\n';
   }
@@ -464,6 +517,11 @@ applyI18n();
 poll();
 setInterval(poll, 15000);
 loadReport(1);
+// Preload report data for other periods so tab switching is instant.
+// Load with delays to avoid competing with the first poll for bandwidth.
+setTimeout(() => loadReport(7), 1500);
+setTimeout(() => loadReport(30), 3000);
+setTimeout(() => loadReport(-1), 4500);
 </script>
 </body>
 </html>
