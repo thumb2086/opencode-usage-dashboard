@@ -7,7 +7,8 @@ Real-time dashboard for your [opencode](https://opencode.ai) token usage and cos
 - Live-updating overview: sessions, messages, total cost, tokens per session
 - Token statistics: Input / Output / Reasoning / Cache Read / Cache Write
 - Tool usage breakdown with percentage bars (collapsible)
-- Per-model usage with cache read stats
+- Per-model usage with cache read stats and generation speed (output tok/s)
+- Usage reports: per-agent speed, wall/active time, and top-20 sessions by duration
 - Daily trend chart (7D / 30D / 90D)
 - Usage reports: Daily / Weekly / Monthly / All time
 - i18n: English + Traditional Chinese, auto-detects browser language

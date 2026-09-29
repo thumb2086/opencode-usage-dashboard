@@ -88,6 +88,18 @@ const { openDb, fetchJson, computeHybrid, detectTables } = require('./check-lib'
     chkGrow(`models[${eTop[0]}].input`, aTop.input, Math.round(eTop[1].input), 1);
     chk(`models[${eTop[0]}].cost`, aTop.cost, eTop[1].cost, 1e-6);
   }
+  // speed: message-level output tok/s for the top-cost model, independent SQL
+  // (same merged message view, same completed/output>0 filter as server).
+  if (eTop) {
+    const rows = db.prepare(`SELECT COALESCE(json_extract(data,'$.providerID'),json_extract(data,'$.model.providerID'),'unknown')||'/'||COALESCE(json_extract(data,'$.modelID'),json_extract(data,'$.model.modelID'),json_extract(data,'$.model.id'),'unknown') AS name, COALESCE(SUM(CAST(json_extract(data,'$.tokens.output') AS INTEGER)),0) AS o, COALESCE(SUM(CAST(json_extract(data,'$.time.completed') AS INTEGER)-CAST(json_extract(data,'$.time.created') AS INTEGER)),0) AS ms FROM ${T.message} WHERE CAST(json_extract(data,'$.tokens.output') AS INTEGER) > 0 AND CAST(json_extract(data,'$.time.completed') AS INTEGER) > CAST(json_extract(data,'$.time.created') AS INTEGER) GROUP BY name`).all();
+    const row = rows.find((x) => x.name === eTop[0]);
+    if (row && row.ms > 0) {
+      const expSpeed = Math.round((row.o / (row.ms / 1000)) * 10) / 10;
+      chk(`models[${eTop[0]}].speed`, (apiByName[eTop[0]] || {}).speed, expSpeed, Math.max(0.1, Math.abs(expSpeed) * 0.05));
+    } else {
+      console.log(`SKIP models[${eTop[0]}].speed: no usable durations`);
+    }
+  }
   db.close();
   console.log(fails === 0 ? 'VERIFY PASS' : `VERIFY FAIL (${fails})`);
   process.exit(fails === 0 ? 0 : 1);

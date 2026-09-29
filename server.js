@@ -96,6 +96,7 @@ function detectSchema(d) {
   schema.embeddedTools = mV2;
   schema.session = (sV2 && sV1)
     ? `(SELECT v.id AS id, v.agent AS agent, v.model AS model,
+         COALESCE(v.title, s.title, '') AS title,
          v.time_created AS time_created,
          MAX(v.time_updated, COALESCE(s.time_updated, 0)) AS time_updated,
          MAX(v.tokens_input, COALESCE(s.tokens_input, 0)) AS tokens_input,
@@ -106,7 +107,7 @@ function detectSchema(d) {
          MAX(v.cost, COALESCE(s.cost, 0)) AS cost
        FROM session_v2 v LEFT JOIN session s ON s.id = v.id
        UNION ALL
-       SELECT id, agent, model, time_created, time_updated, tokens_input, tokens_output,
+       SELECT id, agent, model, title, time_created, time_updated, tokens_input, tokens_output,
          tokens_reasoning, tokens_cache_read, tokens_cache_write, cost
        FROM session WHERE id NOT IN (SELECT id FROM session_v2))`
     : sV2 ? 'session_v2' : 'session';
@@ -292,13 +293,13 @@ function attributeUsage(startMs, endMs) {
   const perAgent = {};
   const perSession = {};
   const ensureDay = (key) => perDay[key] || (perDay[key] = { date: dateOfKey(key), sessions: new Set(), messages: 0, input: 0, output: 0, reasoning: 0, cacheRead: 0, cacheWrite: 0, cost: 0 });
-  const ensureModel = (n) => perModel[n] || (perModel[n] = { messages: 0, sessions: new Set(), input: 0, output: 0, reasoning: 0, cacheRead: 0, cacheWrite: 0, cost: 0 });
+  const ensureModel = (n) => perModel[n] || (perModel[n] = { messages: 0, sessions: new Set(), input: 0, output: 0, reasoning: 0, cacheRead: 0, cacheWrite: 0, cost: 0, speedOut: 0, speedMs: 0 });
   const ensureAgent = (a) => perAgent[a || 'unknown'] || (perAgent[a || 'unknown'] = { messages: 0, sessions: new Set(), input: 0, output: 0, reasoning: 0, cacheRead: 0, cacheWrite: 0, cost: 0 });
 
   // 1. messages in period (exact timing)
   const msgTok = {};
   const msgW = {};
-  const mrows = dbQuery(`SELECT time_created AS t, session_id AS sid, COALESCE(json_extract(data, '$.agent'), 'unknown') AS agent, COALESCE(json_extract(data, '$.providerID'), json_extract(data, '$.model.providerID'), 'unknown') AS provider, COALESCE(json_extract(data, '$.modelID'), json_extract(data, '$.model.modelID'), json_extract(data, '$.model.id'), 'unknown') AS model, COALESCE(CAST(json_extract(data, '$.tokens.input') AS INTEGER), 0) AS input, COALESCE(CAST(json_extract(data, '$.tokens.output') AS INTEGER), 0) AS output, COALESCE(CAST(json_extract(data, '$.tokens.reasoning') AS INTEGER), 0) AS reasoning, COALESCE(CAST(json_extract(data, '$.tokens.cache.read') AS INTEGER), 0) AS cacheRead, COALESCE(CAST(json_extract(data, '$.tokens.cache.write') AS INTEGER), 0) AS cacheWrite, COALESCE(CAST(json_extract(data, '$.cost') AS REAL), 0) AS cost FROM ${schema.message} WHERE time_created >= ${startMs} AND time_created < ${endMs};`) || [];
+  const mrows = dbQuery(`SELECT time_created AS t, session_id AS sid, COALESCE(json_extract(data, '$.agent'), 'unknown') AS agent, COALESCE(json_extract(data, '$.providerID'), json_extract(data, '$.model.providerID'), 'unknown') AS provider, COALESCE(json_extract(data, '$.modelID'), json_extract(data, '$.model.modelID'), json_extract(data, '$.model.id'), 'unknown') AS model, COALESCE(CAST(json_extract(data, '$.tokens.input') AS INTEGER), 0) AS input, COALESCE(CAST(json_extract(data, '$.tokens.output') AS INTEGER), 0) AS output, COALESCE(CAST(json_extract(data, '$.tokens.reasoning') AS INTEGER), 0) AS reasoning, COALESCE(CAST(json_extract(data, '$.tokens.cache.read') AS INTEGER), 0) AS cacheRead, COALESCE(CAST(json_extract(data, '$.tokens.cache.write') AS INTEGER), 0) AS cacheWrite, COALESCE(CAST(json_extract(data, '$.cost') AS REAL), 0) AS cost, CAST(json_extract(data, '$.time.created') AS INTEGER) AS t0, CAST(json_extract(data, '$.time.completed') AS INTEGER) AS t1 FROM ${schema.message} WHERE time_created >= ${startMs} AND time_created < ${endMs};`) || [];
   for (const r of mrows) {
     const key = localDayKey(new Date(r.t));
     const D = ensureDay(key);
@@ -311,6 +312,10 @@ function attributeUsage(startMs, endMs) {
     M.messages++;
     if (r.sid) M.sessions.add(r.sid);
     M.input += iv; M.output += ov; M.reasoning += rv; M.cacheRead += crv; M.cacheWrite += cwv; M.cost += cv;
+    // Message-level generation speed only (session residuals have no
+    // duration): output tokens per active second over completed messages.
+    const t0 = +r.t0 || 0, t1 = +r.t1 || 0;
+    if (ov > 0 && t1 > t0) { M.speedOut += ov; M.speedMs += (t1 - t0); }
     const A = ensureAgent(r.agent);
     A.messages++;
     if (r.sid) A.sessions.add(r.sid);
@@ -454,6 +459,7 @@ function getStatsFromDb(days) {
       cacheRead: Math.round(m.cacheRead),
       cacheWrite: Math.round(m.cacheWrite),
       cost: m.cost,
+      speed: m.speedMs > 0 ? Math.round((m.speedOut / (m.speedMs / 1000)) * 10) / 10 : null,
     }))
     .sort((a, b) => b.cost - a.cost);
 
@@ -510,6 +516,7 @@ function getModelsFromDb() {
       cacheRead: Math.round(m.cacheRead),
       cacheWrite: Math.round(m.cacheWrite),
       cost: m.cost,
+      speed: m.speedMs > 0 ? Math.round((m.speedOut / (m.speedMs / 1000)) * 10) / 10 : null,
     }))
     .sort((a, b) => b.cost - a.cost)
     .slice(0, 10);
@@ -612,6 +619,14 @@ function buildReportFromDb(days) {
   // requested period. This keeps per-day breakdown consistent with the
   // trend chart (which also uses the same full attribution).
   const a = getAttrAll();
+  const aNow = attrAllCache.at; // attribution snapshot time: scope message-level stats to it
+  // Message-level stats per session within the period (period speed + active
+  // time). One GROUP BY over the merged message view, mapped onto the same
+  // session-meta buckets as tokens so row sets stay identical.
+  const msgAgg = {};
+  for (const m of (dbQuery(`SELECT session_id AS sid, COUNT(*) AS n, COALESCE(SUM(CASE WHEN CAST(json_extract(data, '$.tokens.output') AS INTEGER) > 0 AND CAST(json_extract(data, '$.time.completed') AS INTEGER) > CAST(json_extract(data, '$.time.created') AS INTEGER) THEN CAST(json_extract(data, '$.tokens.output') AS INTEGER) ELSE 0 END), 0) AS o, COALESCE(SUM(CASE WHEN CAST(json_extract(data, '$.tokens.output') AS INTEGER) > 0 AND CAST(json_extract(data, '$.time.completed') AS INTEGER) > CAST(json_extract(data, '$.time.created') AS INTEGER) THEN CAST(json_extract(data, '$.time.completed') AS INTEGER) - CAST(json_extract(data, '$.time.created') AS INTEGER) ELSE 0 END), 0) AS ms FROM ${schema.message} WHERE time_created >= ${startMs} AND time_created < ${aNow} GROUP BY sid`) || [])) {
+    msgAgg[m.sid] = m;
+  }
   const periodDays = {};
   for (const [key, val] of Object.entries(a.perDay)) {
     const dayMs = val.date.getTime();
@@ -658,28 +673,34 @@ function buildReportFromDb(days) {
   // above for avg/median.
   if (periodSessionIds.length) {
     const placeholders = periodSessionIds.map(() => '?').join(',');
-    const sessMeta = dbQuery(`SELECT id, agent, COALESCE(json_extract(model,'$.providerID'),'unknown') AS provider, COALESCE(json_extract(model,'$.id'),'unknown') AS model FROM ${schema.session} WHERE id IN (${placeholders})`, periodSessionIds) || [];
+    const sessMeta = dbQuery(`SELECT id, agent, COALESCE(json_extract(model,'$.providerID'),'unknown') AS provider, COALESCE(json_extract(model,'$.id'),'unknown') AS model, title, time_created AS tc, time_updated AS tu FROM ${schema.session} WHERE id IN (${placeholders})`, periodSessionIds) || [];
     const metaMap = {};
     for (const s of sessMeta) metaMap[s.id] = s;
 
     const agentAgg = {};
     const modelAgg = {};
+    const sessRows = [];
     for (const sid of periodSessionIds) {
       const ps = a.perSession[sid];
       if (!ps) continue;
       const meta = metaMap[sid] || { agent: 'unknown', provider: 'unknown', model: 'unknown' };
       const agent = meta.agent || 'unknown';
       const modelName = `${meta.provider}/${meta.model}`;
-      if (!agentAgg[agent]) agentAgg[agent] = { sessions: new Set(), cost: 0, input: 0, output: 0, reasoning: 0, cacheRead: 0 };
+      if (!agentAgg[agent]) agentAgg[agent] = { sessions: new Set(), cost: 0, input: 0, output: 0, reasoning: 0, cacheRead: 0, speedOut: 0, speedMs: 0, wallMs: 0, activeMs: 0 };
       agentAgg[agent].sessions.add(sid);
       agentAgg[agent].input += ps.input; agentAgg[agent].output += ps.output;
       agentAgg[agent].reasoning += ps.reasoning; agentAgg[agent].cacheRead += ps.cacheRead;
       agentAgg[agent].cost += ps.cost;
-      if (!modelAgg[modelName]) modelAgg[modelName] = { sessions: new Set(), cost: 0, input: 0, output: 0, reasoning: 0, cacheRead: 0 };
+      const mg = msgAgg[sid] || { n: 0, o: 0, ms: 0 };
+      agentAgg[agent].speedOut += mg.o; agentAgg[agent].speedMs += mg.ms; agentAgg[agent].activeMs += mg.ms;
+      agentAgg[agent].wallMs += Math.max(0, (meta.tu || 0) - (meta.tc || 0));
+      if (!modelAgg[modelName]) modelAgg[modelName] = { sessions: new Set(), cost: 0, input: 0, output: 0, reasoning: 0, cacheRead: 0, speedOut: 0, speedMs: 0 };
       modelAgg[modelName].sessions.add(sid);
       modelAgg[modelName].input += ps.input; modelAgg[modelName].output += ps.output;
       modelAgg[modelName].reasoning += ps.reasoning; modelAgg[modelName].cacheRead += ps.cacheRead;
       modelAgg[modelName].cost += ps.cost;
+      modelAgg[modelName].speedOut += mg.o; modelAgg[modelName].speedMs += mg.ms;
+      sessRows.push({ sid, meta, ps, mg });
     }
 
     var pAgentRows = Object.entries(agentAgg)
@@ -687,6 +708,8 @@ function buildReportFromDb(days) {
         agent, sessions: m.sessions.size, cost: r4(m.cost),
         tok_in: Math.round(m.input), tok_out: Math.round(m.output),
         tok_reasoning: Math.round(m.reasoning), cache_read: Math.round(m.cacheRead),
+        speed: m.speedMs > 0 ? Math.round((m.speedOut / (m.speedMs / 1000)) * 10) / 10 : null,
+        wallMs: Math.round(m.wallMs), activeMs: Math.round(m.activeMs),
       }))
       .sort((x, y) => y.cost - x.cost);
     var pProviderRows = Object.entries(modelAgg)
@@ -696,12 +719,26 @@ function buildReportFromDb(days) {
           provider, model, sessions: m.sessions.size, cost: r4(m.cost),
           tok_in: Math.round(m.input), tok_out: Math.round(m.output),
           tok_reasoning: Math.round(m.reasoning), cache_read: Math.round(m.cacheRead),
+          speed: m.speedMs > 0 ? Math.round((m.speedOut / (m.speedMs / 1000)) * 10) / 10 : null,
         };
       })
       .sort((x, y) => y.cost - x.cost);
+    var pSessionRows = sessRows
+      .map(({ sid, meta, ps, mg }) => ({
+        id: sid, title: (meta.title || '').slice(0, 40), agent: meta.agent || 'unknown',
+        provider: meta.provider || 'unknown', model: meta.model || 'unknown',
+        wallMs: Math.max(0, (meta.tu || 0) - (meta.tc || 0)),
+        activeMs: mg.ms || 0, messages: mg.n || 0,
+        tok_in: Math.round(ps.input), tok_out: Math.round(ps.output),
+        cost: r4(ps.cost),
+        speed: (mg.ms || 0) > 0 ? Math.round(((mg.o || 0) / (mg.ms / 1000)) * 10) / 10 : null,
+      }))
+      .sort((x, y) => y.wallMs - x.wallMs)
+      .slice(0, 20);
   } else {
     var pAgentRows = [];
     var pProviderRows = [];
+    var pSessionRows = [];
   }
 
   return {
@@ -710,6 +747,7 @@ function buildReportFromDb(days) {
     stats: statsR,
     agents: pAgentRows,
     providers: pProviderRows,
+    sessions: pSessionRows,
     generatedAt: now,
   };
 }

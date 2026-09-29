@@ -43,6 +43,7 @@ function detectTables(db) {
   return {
     session: (sV2 && sV1)
       ? `(SELECT v.id AS id, v.agent AS agent, v.model AS model,
+           COALESCE(v.title, s.title, '') AS title,
            v.time_created AS time_created,
            MAX(v.time_updated, COALESCE(s.time_updated, 0)) AS time_updated,
            MAX(v.tokens_input, COALESCE(s.tokens_input, 0)) AS tokens_input,
@@ -53,7 +54,7 @@ function detectTables(db) {
            MAX(v.cost, COALESCE(s.cost, 0)) AS cost
          FROM session_v2 v LEFT JOIN session s ON s.id = v.id
          UNION ALL
-         SELECT id, agent, model, time_created, time_updated, tokens_input, tokens_output,
+         SELECT id, agent, model, title, time_created, time_updated, tokens_input, tokens_output,
            tokens_reasoning, tokens_cache_read, tokens_cache_write, cost
          FROM session WHERE id NOT IN (SELECT id FROM session_v2))`
       : sV2 ? 'session_v2' : 'session',

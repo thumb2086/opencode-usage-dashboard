@@ -40,6 +40,8 @@ On a V1-only database every expression collapses to the plain V1 tables.
 Token/cost attribution uses a hybrid model:
 1. **Message-level** — Each assistant message's `tokens` and `cost` from `message.data` JSON are attributed to its `time_created` local day
 2. **Session residual** — `session.tokens_* - sum(message.tokens_*)` is spread across the session's full local-day span, weighted by per-day message volume
+3. **Speed (message-level only)** — Per-model `speed` (output tok/s) = Σ completed-assistant-message `tokens.output` ÷ Σ(`time.completed - time.created`). Session residuals carry no duration and are excluded; models without usable durations report `null` (shown as —). Tracked in the same message scan, no extra query.
+4. **Period speed/active/wall (report)** — `buildReportFromDb` runs one extra `GROUP BY session_id` over the merged message view (scoped to `[periodStart, attrSnapshot)`), mapped onto the same session-meta buckets: providers/agents gain period `speed`; agents gain `wallMs` (Σ full session spans — same scope as their token columns) and `activeMs` (Σ in-period message durations); `report.sessions` lists the top 20 sessions by wall time with both durations. Wall includes idle; active counts only model-running time.
 
 This ensures multi-day sessions (e.g. a session created Monday, updated Thursday) don't dump all tokens onto Thursday.
 

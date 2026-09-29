@@ -124,7 +124,7 @@
   <h2 data-i18n="modelUsage">MODEL USAGE</h2>
   <table>
     <thead>
-      <tr><th data-i18n="thModel">Model</th><th data-i18n="thMsgs">Messages</th><th>Input</th><th>Output</th><th>Cache Read</th><th style="width:26%" data-i18n="thUsage">Usage</th><th data-i18n="thCost">Cost</th></tr>
+      <tr><th data-i18n="thModel">Model</th><th data-i18n="thMsgs">Messages</th><th>Input</th><th>Output</th><th>Cache Read</th><th data-i18n="thSpeed">Speed</th><th style="width:26%" data-i18n="thUsage">Usage</th><th data-i18n="thCost">Cost</th></tr>
     </thead>
     <tbody id="model-rows"></tbody>
   </table>
@@ -182,7 +182,7 @@ const STRINGS = {
     totalCost: 'Total Cost', avgCostDay: 'Avg Cost / Day',
     avgTokensSession: 'Avg Tokens / Session', medianTokensSession: 'Median Tokens / Session',
     tokenStats: 'TOKEN STATISTICS', toolUsage: 'TOOL USAGE', modelUsage: 'MODEL USAGE',
-    thModel: 'Model', thMsgs: 'Messages', thUsage: 'Usage', thCost: 'Cost',
+    thModel: 'Model', thMsgs: 'Messages', thSpeed: 'Speed', thUsage: 'Usage', thCost: 'Cost',
     dailyTrend: 'DAILY TREND ({days} DAYS)',
     inputDay: 'Input / Day', outputDay: 'Output / Day', cacheReadDay: 'Cache Read / Day', costDay: 'Cost / Day',
     report: 'USAGE REPORT', all: 'All', daily: 'Daily', weekly: 'Weekly', monthly: 'Monthly',
@@ -199,7 +199,7 @@ const STRINGS = {
     totalCost: '總費用', avgCostDay: '平均費用 / 天',
     avgTokensSession: '平均 tokens / 場', medianTokensSession: '中位數 tokens / 場',
     tokenStats: 'Tokens 統計', toolUsage: '工具使用', modelUsage: '模型使用',
-    thModel: '模型', thMsgs: '訊息', thUsage: '用量', thCost: '費用',
+    thModel: '模型', thMsgs: '訊息', thSpeed: '速度', thUsage: '用量', thCost: '費用',
     dailyTrend: '近 {days} 天趨勢',
     inputDay: 'Input / 天', outputDay: 'Output / 天', cacheReadDay: 'Cache Read / 天', costDay: '費用 / 天',
     report: '用量報告', all: '全部', daily: '每日', weekly: '每週', monthly: '每月',
@@ -265,6 +265,7 @@ const fmt = (n) => {
   return String(Math.round(n));
 };
 const fmtCost = (n) => (n == null || isNaN(n)) ? '—' : '$' + n.toFixed(2);
+const fmtSpeed = (n) => (n == null || isNaN(n) || !isFinite(n)) ? '—' : ((n >= 100 ? Math.round(n) : Math.round(n * 10) / 10) + ' tok/s');
 
 function barRow(name, value, max, color) {
   const pct = max > 0 ? Math.max(0.5, (value / max) * 100) : 0;
@@ -307,7 +308,7 @@ function render(d, models, trend) {
       const cw = total > 0 ? (m.cacheRead / total) * 100 : 0;
       const w = Math.max(iw + ow + cw, 1);
       return `<tr><td>${m.name}</td><td>${fmt(m.messages)}</td><td>${fmt(m.input)}</td>
-        <td>${fmt(m.output)}</td><td>${fmt(m.cacheRead)}</td>
+        <td>${fmt(m.output)}</td><td>${fmt(m.cacheRead)}</td><td>${fmtSpeed(m.speed)}</td>
         <td><div class="track" style="height:10px"><div class="stack">
           <div style="width:${(iw / w) * 100}%;background:var(--in)"></div>
           <div style="width:${(ow / w) * 100}%;background:var(--out)"></div>
@@ -450,6 +451,7 @@ function formatReport(jr) {
   const cachedNote = jr.stale ? ' [⟳ ' + t('updating') + ']' : ' [' + t('cachedAt') + ' ' + genTime + ']';
   const fmtCost = (n) => { const v = parseFloat(n); if (isNaN(v)) return '—'; return v === 0 ? '$0.00' : '$' + v.toFixed(4); };
   const fmtT = (n) => { const v = parseInt(n, 10); if (isNaN(v)) return '—'; if (v >= 1e9) return (v/1e9).toFixed(2)+'B'; if (v >= 1e6) return (v/1e6).toFixed(1)+'M'; if (v >= 1e3) return (v/1e3).toFixed(1)+'K'; return String(v); };
+  const fmtDur = (ms) => { const v = Math.round((ms || 0) / 1000); if (!isFinite(v) || v < 0) return '—'; const d = Math.floor(v / 86400), h = Math.floor(v % 86400 / 3600), m = Math.floor(v % 3600 / 60), s = v % 60; if (d > 0) return d + 'd' + h + 'h'; if (h > 0) return h + 'h' + String(m).padStart(2, '0') + 'm'; if (m > 0) return m + 'm' + String(s).padStart(2, '0') + 's'; return s + 's'; };
   const pad = (s, w) => { s = String(s); return s.length >= w ? s : s + ' '.repeat(w - s.length); };
   const rpad = (s, w) => { s = String(s); return s.length >= w ? s : ' '.repeat(w - s.length) + s; };
   let out = '';
@@ -473,15 +475,22 @@ function formatReport(jr) {
   if (jr.providers && jr.providers.length) {
     out += 'PROVIDERS & MODELS\n';
     jr.providers.forEach((p) => {
-      out += '  ' + pad(p.provider + '/' + p.model, 45) + pad(p.sessions + ' sessions', 14) + '  ' + rpad(fmtCost(p.cost), 10) + '   ' + rpad(fmtT(p.tok_in), 8) + ' in / ' + rpad(fmtT(p.tok_out), 8) + ' out  cache: ' + rpad(fmtT(p.cache_read), 8) + '\n';
+      out += '  ' + pad(p.provider + '/' + p.model, 45) + pad(p.sessions + ' sessions', 14) + '  ' + rpad(fmtCost(p.cost), 10) + '   ' + rpad(fmtT(p.tok_in), 8) + ' in / ' + rpad(fmtT(p.tok_out), 8) + ' out  cache: ' + rpad(fmtT(p.cache_read), 8) + '  ' + rpad(fmtSpeed(p.speed), 11) + '\n';
     });
     out += '\n';
   }
   if (jr.agents && jr.agents.length) {
     out += 'AGENTS\n';
     jr.agents.forEach((a) => {
-      out += '  ' + pad(a.agent, 45) + pad(a.sessions + ' sessions', 14) + '  ' + rpad(fmtCost(a.cost), 10) + '   ' + rpad(fmtT(a.tok_in), 8) + ' in / ' + rpad(fmtT(a.tok_out), 8) + ' out  cache: ' + rpad(fmtT(a.cache_read), 8) + '\n';
+      out += '  ' + pad(a.agent, 45) + pad(a.sessions + ' sessions', 14) + '  ' + rpad(fmtCost(a.cost), 10) + '   ' + rpad(fmtT(a.tok_in), 8) + ' in / ' + rpad(fmtT(a.tok_out), 8) + ' out  cache: ' + rpad(fmtT(a.cache_read), 8) + '  ' + rpad(fmtSpeed(a.speed), 11) + ' wall:' + rpad(fmtDur(a.wallMs), 9) + 'act:' + rpad(fmtDur(a.activeMs), 9) + '\n';
     });
+  }
+  if (jr.sessions && jr.sessions.length) {
+    out += 'SESSIONS (top ' + jr.sessions.length + ' by wall time)\n';
+    jr.sessions.forEach((s) => {
+      out += '  ' + pad(String(s.id).slice(0, 12), 13) + pad((s.title || '').slice(0, 28), 29) + pad(s.agent, 9) + pad((s.provider + '/' + s.model).slice(0, 30), 31) + 'wall:' + rpad(fmtDur(s.wallMs), 9) + 'act:' + rpad(fmtDur(s.activeMs), 9) + rpad(s.messages + 'msgs', 8) + rpad(fmtT(s.tok_in), 8) + ' in / ' + rpad(fmtT(s.tok_out), 8) + ' out  ' + rpad(fmtSpeed(s.speed), 11) + ' ' + rpad(fmtCost(s.cost), 10) + '\n';
+    });
+    out += '\n';
   }
   return out || 'No data for this period.';
 }

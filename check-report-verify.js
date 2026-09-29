@@ -79,11 +79,18 @@ const keyToMs = (k) => { const [y, m, d] = k.split('-').map(Number); return new 
     chk('medianTokensSession', s.cost.medianTokensSession, Math.round(med), 1);
 
     // Providers + agents from session-table meta over the period's sessions.
+    // Message-level stats per session (period speed + active time), same
+    // filter as server (upper bound = time-travel endMs here).
     const agentAgg = {};
     const modelAgg = {};
+    const sessExp = [];
+    const msgMap = {};
+    for (const m of db.prepare(`SELECT session_id AS sid, COUNT(*) AS n, COALESCE(SUM(CASE WHEN CAST(json_extract(data,'$.tokens.output') AS INTEGER) > 0 AND CAST(json_extract(data,'$.time.completed') AS INTEGER) > CAST(json_extract(data,'$.time.created') AS INTEGER) THEN CAST(json_extract(data,'$.tokens.output') AS INTEGER) ELSE 0 END),0) AS o, COALESCE(SUM(CASE WHEN CAST(json_extract(data,'$.tokens.output') AS INTEGER) > 0 AND CAST(json_extract(data,'$.time.completed') AS INTEGER) > CAST(json_extract(data,'$.time.created') AS INTEGER) THEN CAST(json_extract(data,'$.time.completed') AS INTEGER) - CAST(json_extract(data,'$.time.created') AS INTEGER) ELSE 0 END),0) AS ms FROM ${T.message} WHERE time_created >= ${startMs} AND time_created < ? GROUP BY sid`).all(endMs)) {
+      msgMap[m.sid] = m;
+    }
     if (periodSessionIds.length) {
       const ph = periodSessionIds.map(() => '?').join(',');
-      const meta = db.prepare(`SELECT id, agent, COALESCE(json_extract(model,'$.providerID'),'unknown') AS provider, COALESCE(json_extract(model,'$.id'),'unknown') AS model FROM ${T.session} WHERE id IN (${ph})`).all(...periodSessionIds);
+      const meta = db.prepare(`SELECT id, agent, COALESCE(json_extract(model,'$.providerID'),'unknown') AS provider, COALESCE(json_extract(model,'$.id'),'unknown') AS model, title, time_created AS tc, time_updated AS tu FROM ${T.session} WHERE id IN (${ph})`).all(...periodSessionIds);
       const metaMap = {};
       for (const m of meta) metaMap[m.id] = m;
       for (const sid of periodSessionIds) {
@@ -92,16 +99,21 @@ const keyToMs = (k) => { const [y, m, d] = k.split('-').map(Number); return new 
         const m = metaMap[sid] || { agent: 'unknown', provider: 'unknown', model: 'unknown' };
         const agent = m.agent || 'unknown';
         const name = `${m.provider}/${m.model}`;
-        if (!agentAgg[agent]) agentAgg[agent] = { sessions: new Set(), cost: 0, input: 0, output: 0, reasoning: 0, cacheRead: 0 };
+        if (!agentAgg[agent]) agentAgg[agent] = { sessions: new Set(), cost: 0, input: 0, output: 0, reasoning: 0, cacheRead: 0, speedOut: 0, speedMs: 0, wallMs: 0, activeMs: 0 };
         agentAgg[agent].sessions.add(sid);
         agentAgg[agent].input += ps.input; agentAgg[agent].output += ps.output;
         agentAgg[agent].reasoning += ps.reasoning; agentAgg[agent].cacheRead += ps.cacheRead;
         agentAgg[agent].cost += ps.cost;
-        if (!modelAgg[name]) modelAgg[name] = { sessions: new Set(), cost: 0, input: 0, output: 0, reasoning: 0, cacheRead: 0 };
+        const mg = msgMap[sid] || { n: 0, o: 0, ms: 0 };
+        agentAgg[agent].speedOut += mg.o; agentAgg[agent].speedMs += mg.ms; agentAgg[agent].activeMs += mg.ms;
+        agentAgg[agent].wallMs += Math.max(0, (m.tu || 0) - (m.tc || 0));
+        sessExp.push({ sid, m, ps, mg });
+        if (!modelAgg[name]) modelAgg[name] = { sessions: new Set(), cost: 0, input: 0, output: 0, reasoning: 0, cacheRead: 0, speedOut: 0, speedMs: 0 };
         modelAgg[name].sessions.add(sid);
         modelAgg[name].input += ps.input; modelAgg[name].output += ps.output;
         modelAgg[name].reasoning += ps.reasoning; modelAgg[name].cacheRead += ps.cacheRead;
         modelAgg[name].cost += ps.cost;
+        modelAgg[name].speedOut += mg.o; modelAgg[name].speedMs += mg.ms;
       }
     }
 
@@ -114,6 +126,7 @@ const keyToMs = (k) => { const [y, m, d] = k.split('-').map(Number); return new 
         sessions: m.sessions.size,
         cost: Math.round(m.cost * 1e4) / 1e4,
         tok_in: Math.round(m.input),
+        speed: m.speedMs > 0 ? Math.round((m.speedOut / (m.speedMs / 1000)) * 10) / 10 : null,
       };
     });
     const byProv = {};
@@ -124,6 +137,7 @@ const keyToMs = (k) => { const [y, m, d] = k.split('-').map(Number); return new 
       chk(`prov[${e.key}].sessions`, p.sessions, e.sessions);
       chk(`prov[${e.key}].in`, p.tok_in, e.tok_in, 1);
       chk(`prov[${e.key}].cost`, p.cost, e.cost, 6e-5);
+      chk(`prov[${e.key}].speed`, p.speed, e.speed, Math.max(0.1, Math.abs(e.speed || 0) * 0.05));
     }
     if (r.providers.length !== expProviders.length) {
       console.log(`FAIL ${tag} providers.length: api=${r.providers.length} expected=${expProviders.length}`); fails++;
@@ -131,6 +145,8 @@ const keyToMs = (k) => { const [y, m, d] = k.split('-').map(Number); return new 
 
     const expAgents = Object.entries(agentAgg).map(([agent, m]) => ({
       agent, sessions: m.sessions.size, tok_in: Math.round(m.input),
+      speed: m.speedMs > 0 ? Math.round((m.speedOut / (m.speedMs / 1000)) * 10) / 10 : null,
+      wallMs: Math.round(m.wallMs), activeMs: Math.round(m.activeMs),
     }));
     const byAgent = {};
     for (const x of r.agents) byAgent[x.agent] = x;
@@ -139,10 +155,41 @@ const keyToMs = (k) => { const [y, m, d] = k.split('-').map(Number); return new 
       if (!x) { console.log(`FAIL ${tag} agents missing ${e.agent}`); fails++; continue; }
       chk(`agent[${e.agent}].sessions`, x.sessions, e.sessions);
       chk(`agent[${e.agent}].in`, x.tok_in, e.tok_in, 1);
+      chk(`agent[${e.agent}].speed`, x.speed, e.speed, Math.max(0.1, Math.abs(e.speed || 0) * 0.05));
+      chk(`agent[${e.agent}].wallMs`, x.wallMs, e.wallMs, Math.max(120000, e.wallMs * 0.05));
+      chk(`agent[${e.agent}].activeMs`, x.activeMs, e.activeMs, Math.max(120000, e.activeMs * 0.05));
     }
     if (r.agents.length !== expAgents.length) {
       console.log(`FAIL ${tag} agents.length: api=${r.agents.length} expected=${expAgents.length}`); fails++;
     } else console.log(`OK   ${tag} agents.length: ${r.agents.length}`);
+
+    // Sessions detail: top 20 by wall time, spot-check first 3 rows.
+    const expSessions = sessExp
+      .map(({ sid, m, ps, mg }) => ({
+        id: sid,
+        wallMs: Math.max(0, (m.tu || 0) - (m.tc || 0)),
+        activeMs: mg.ms || 0, messages: mg.n || 0,
+        speed: (mg.ms || 0) > 0 ? Math.round(((mg.o || 0) / (mg.ms / 1000)) * 10) / 10 : null,
+      }))
+      .sort((x, y) => y.wallMs - x.wallMs)
+      .slice(0, 20);
+    const apiSessions = r.sessions || [];
+    if (apiSessions.length !== expSessions.length) {
+      console.log(`FAIL ${tag} sessions.length: api=${apiSessions.length} expected=${expSessions.length}`); fails++;
+    } else console.log(`OK   ${tag} sessions.length: ${apiSessions.length}`);
+    for (let i = 1; i < apiSessions.length; i++) {
+      if (apiSessions[i - 1].wallMs < apiSessions[i].wallMs) {
+        console.log(`FAIL ${tag} sessions not sorted desc at ${i}`); fails++; break;
+      }
+    }
+    for (let i = 0; i < Math.min(3, expSessions.length); i++) {
+      const e = expSessions[i], a2 = apiSessions[i] || {};
+      if (a2.id !== e.id) { console.log(`FAIL ${tag} sessions[${i}].id: api=${a2.id} expected=${e.id}`); fails++; continue; }
+      chk(`sessions[${i}].wallMs`, a2.wallMs, e.wallMs, Math.max(120000, e.wallMs * 0.05));
+      chk(`sessions[${i}].activeMs`, a2.activeMs, e.activeMs, Math.max(120000, e.activeMs * 0.05));
+      chk(`sessions[${i}].messages`, a2.messages, e.messages, Math.max(5, e.messages * 0.01));
+      chk(`sessions[${i}].speed`, a2.speed, e.speed, Math.max(0.1, Math.abs(e.speed || 0) * 0.05));
+    }
   }
   db.close();
   console.log(fails === 0 ? 'VERIFY PASS' : `VERIFY FAIL (${fails})`);
