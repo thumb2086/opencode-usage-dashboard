@@ -207,12 +207,16 @@ function cleanExpiredCache(cache, ttl) {
 }
 
 async function generateTrend(days) {
-  const now = Date.now();
-
   // Buckets: local midnights, today -> (days-1) days ago.
-  // Values come from attributeUsage (hybrid message+session-residual
-  // attribution), so multi-day sessions don't dump everything on one day
-  // and pruned (message-less) history isn't lost either.
+  // Values are sliced from the SHARED all-time attribution (getAttrAll(),
+  // the same object the usage report uses) — never a separate windowed
+  // attributeUsage call. Windowed attribution inflates in-window days:
+  // messages before the window are excluded from msgTok, so the session
+  // residual grows and lands entirely on windowed days (measured
+  // +0.25–1.7M input/day on 2026-09-29). One shared attribution makes
+  // trend buckets and report periods structurally identical; any remaining
+  // panel difference is only cache age (trend ≤60s, report ≤10min, both
+  // timestamps shown in the UI).
   const buckets = [];
   const today = new Date();
   for (let i = 0; i < days; i++) {
@@ -221,7 +225,7 @@ async function generateTrend(days) {
     d.setHours(0, 0, 0, 0);
     buckets.push(d);
   }
-  const a = attributeUsage(buckets[buckets.length - 1].getTime(), now);
+  const a = getAttrAll();
   const at = (b, f) => {
     const D = a.perDay[localDayKey(b)];
     return D ? D[f] : 0;
@@ -232,7 +236,7 @@ async function generateTrend(days) {
   };
 
   return {
-    generatedAt: now,
+    generatedAt: attrAllCache.at, // attribution build time, not response time
     step: 1,
     labels: buckets.map((b) => (b.getMonth() + 1) + '/' + b.getDate()),
     sessions: buckets.map(sess),
@@ -324,10 +328,9 @@ function attributeUsage(startMs, endMs) {
   // 2. sessions intersecting the period: spread residual
   const srows = dbQuery(`SELECT id, agent, COALESCE(json_extract(model, '$.providerID'), 'unknown') AS provider, COALESCE(json_extract(model, '$.id'), 'unknown') AS model, time_created AS tc, time_updated AS tu, tokens_input AS si, tokens_output AS so, tokens_reasoning AS sr, tokens_cache_read AS scr, tokens_cache_write AS scw, cost AS sc FROM ${schema.session} WHERE time_updated >= ${startMs} AND time_created < ${endMs};`) || [];
   for (const s of srows) {
-    // Use the session's FULL span for residual distribution so that
-    // trend (7d window) and report (1d window) distribute the same
-    // residual across the same days. This keeps daily breakdown
-    // consistent regardless of the caller's time window.
+    // Use the session's FULL span for residual distribution. All consumers
+    // share one all-time attribution (getAttrAll), so per-day values are
+    // identical whichever period slices them.
     const d0 = new Date(new Date(s.tc).setHours(0, 0, 0, 0));
     const d1 = new Date(new Date(s.tu).setHours(0, 0, 0, 0));
     const spanKeys = [];

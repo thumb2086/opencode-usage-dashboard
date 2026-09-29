@@ -338,12 +338,13 @@ function renderTrend(data) {
   const maxAll = Math.max(...data.input, ...data.output, ...(data.reasoning || []), ...data.cacheRead);
   const hasCost = data.cost.some((v) => v >= 0.0001);
 
+  const trendTime = data.generatedAt ? new Date(data.generatedAt).toLocaleTimeString(lang === 'zh-TW' ? 'zh-TW' : 'en', { hour12: false }) : '?';
   $('trend-tokens').innerHTML = data.labels.map((l, i) => {
     const hi = maxAll > 0 ? (data.input[i] / maxAll) * 100 : 0;
     const ho = maxAll > 0 ? (data.output[i] / maxAll) * 100 : 0;
     const hr = maxAll > 0 && data.reasoning ? (data.reasoning[i] / maxAll) * 100 : 0;
     const hc = maxAll > 0 ? (data.cacheRead[i] / maxAll) * 100 : 0;
-    const tip = l + ': In ' + fmt(data.input[i]) + ' · Out ' + fmt(data.output[i]) + ' · Reas ' + fmt(data.reasoning ? data.reasoning[i] : 0) + ' · Cache ' + fmt(data.cacheRead[i]);
+    const tip = l + ': In ' + fmt(data.input[i]) + ' · Out ' + fmt(data.output[i]) + ' · Reas ' + fmt(data.reasoning ? data.reasoning[i] : 0) + ' · Cache ' + fmt(data.cacheRead[i]) + ' · ' + trendTime;
     return `<div class="col" title="${tip}">
       <div style="display:flex;gap:2px;align-items:flex-end;width:100%;height:170px;justify-content:center">
         <div style="position:relative;width:100%;height:100%">

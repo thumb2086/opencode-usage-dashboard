@@ -1,6 +1,9 @@
 // Verify /api/stats trend against independent hybrid attribution.
-// Time-travel: expected range ends at trend.generatedAt, so live chat drift
-// is impossible; every day must match exactly.
+// The server slices trend buckets from the shared all-time attribution
+// (getAttrAll), so recompute full-range here too — a windowed recompute
+// would inflate in-window days and mismatch by design. Time-travel: expected
+// range ends at trend.generatedAt. On a live DB, mutating session totals can
+// still move residuals by small amounts; verify on a snapshot for exactness.
 const { openDb, fetchJson, dayKeyOfLocal, computeHybrid } = require('./check-lib');
 
 const DAYS = parseInt(process.argv[2] || '7', 10);
@@ -18,9 +21,8 @@ const DAYS = parseInt(process.argv[2] || '7', 10);
     d.setHours(0, 0, 0, 0);
     buckets.push(d);
   }
-  const startMs = buckets[buckets.length - 1].getTime();
   const db = openDb();
-  const exp = computeHybrid(db, startMs, endMs);
+  const exp = computeHybrid(db, 0, endMs);
   db.close();
 
   let fails = 0;
