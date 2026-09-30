@@ -13,7 +13,7 @@ opencode-dashboard
 ## Architecture
 
 - `server.js` — Node.js HTTP server (zero frameworks, pure `http` module)
-- `public/index.html` — Single-file frontend (vanilla JS/CSS/HTML, no build step)
+- `public/index.html` — Single-file frontend (vanilla JS/CSS/HTML, no build step). Report charts (`#speed-bars`, `#agent-bars`, `#session-bars`) render from `/api/report` data via `renderReportCharts`; `check-frontend-smoke.js` executes the page's real script against live API data with a stub DOM.
 - `backups/` — Gzipped DB backups (auto-rotated, `OPENCODE_BACKUP_RETENTION`)
 
 ## Key Patterns

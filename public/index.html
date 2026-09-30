@@ -173,6 +173,29 @@
   <div id="reportContent" style="font-family:monospace;font-size:13px;line-height:1.6;white-space:pre;overflow-x:auto;color:var(--text)">Loading…</div>
 </section>
 
+<section>
+  <h2 data-i18n="modelSpeed">MODEL SPEED</h2>
+  <div id="speed-bars"></div>
+</section>
+
+<section>
+  <h2 data-i18n="agentTime">AGENT TIME</h2>
+  <div class="legend">
+    <span><i class="sw" style="background:var(--cache)"></i>wall</span>
+    <span><i class="sw" style="background:var(--out)"></i>active</span>
+  </div>
+  <div id="agent-bars"></div>
+</section>
+
+<section>
+  <h2 data-i18n="topSessions">TOP SESSIONS</h2>
+  <div class="legend">
+    <span><i class="sw" style="background:var(--cache)"></i>wall</span>
+    <span><i class="sw" style="background:var(--out)"></i>active</span>
+  </div>
+  <div id="session-bars"></div>
+</section>
+
 <script>
 const STRINGS = {
   en: {
@@ -185,7 +208,7 @@ const STRINGS = {
     thModel: 'Model', thMsgs: 'Messages', thSpeed: 'Speed', thUsage: 'Usage', thCost: 'Cost',
     dailyTrend: 'DAILY TREND ({days} DAYS)',
     inputDay: 'Input / Day', outputDay: 'Output / Day', cacheReadDay: 'Cache Read / Day', costDay: 'Cost / Day',
-    report: 'USAGE REPORT', all: 'All', daily: 'Daily', weekly: 'Weekly', monthly: 'Monthly',
+    report: 'USAGE REPORT', all: 'All', daily: 'Daily', weekly: 'Weekly', monthly: 'Monthly', modelSpeed: 'MODEL SPEED', agentTime: 'AGENT TIME', topSessions: 'TOP SESSIONS',
     updating: 'updating…', generating: 'Generating trend data…', cachedAt: 'cached at', allFree: 'All models free — no cost recorded',
     live: 'Live', loading: 'Loading…', lastUpdated: 'Last updated', dataAgo: 'data generated',
     statsFail: 'Failed to read opencode stats', connFail: 'Connection failed',
@@ -202,7 +225,7 @@ const STRINGS = {
     thModel: '模型', thMsgs: '訊息', thSpeed: '速度', thUsage: '用量', thCost: '費用',
     dailyTrend: '近 {days} 天趨勢',
     inputDay: 'Input / 天', outputDay: 'Output / 天', cacheReadDay: 'Cache Read / 天', costDay: '費用 / 天',
-    report: '用量報告', all: '全部', daily: '每日', weekly: '每週', monthly: '每月',
+    report: '用量報告', all: '全部', daily: '每日', weekly: '每週', monthly: '每月', modelSpeed: '模型速度', agentTime: '代理時間', topSessions: '最長場次',
     updating: '更新中…', generating: '趨勢資料產生中…', cachedAt: '快取於', allFree: '全部使用免費模型，無費用紀錄',
     live: '即時更新', loading: '載入中…', lastUpdated: '更新於', dataAgo: '數據產生於',
     statsFail: 'opencode stats 讀取失敗', connFail: '連線失敗',
@@ -265,6 +288,8 @@ const fmt = (n) => {
   return String(Math.round(n));
 };
 const fmtCost = (n) => (n == null || isNaN(n)) ? '—' : '$' + n.toFixed(2);
+const fmtDur = (ms) => { const v = Math.round((ms || 0) / 1000); if (!isFinite(v) || v < 0) return '—'; const d = Math.floor(v / 86400), h = Math.floor(v % 86400 / 3600), m = Math.floor(v % 3600 / 60), s = v % 60; if (d > 0) return d + 'd' + h + 'h'; if (h > 0) return h + 'h' + String(m).padStart(2, '0') + 'm'; if (m > 0) return m + 'm' + String(s).padStart(2, '0') + 's'; return s + 's'; };
+const esc = (s) => String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 const fmtSpeed = (n) => (n == null || isNaN(n) || !isFinite(n)) ? '—' : ((n >= 100 ? Math.round(n) : Math.round(n * 10) / 10) + ' tok/s');
 
 function barRow(name, value, max, color) {
@@ -446,12 +471,48 @@ let reportLoading = false;
 let reportRetry = 0;
 const MAX_REPORT_RETRIES = 12;
 
+function twoBars(name, wallMs, activeMs, maxWall, valText, sub) {
+  const w = maxWall > 0 ? Math.max(0.5, (wallMs / maxWall) * 100) : 0;
+  const a = maxWall > 0 ? Math.max(0.5, (activeMs / maxWall) * 100) : 0;
+  return `<div class="bar-row"><div class="name" title="${esc(sub || '')}">${esc(name)}</div>
+    <div><div class="track" style="height:8px;margin-bottom:3px"><div class="fill" style="width:${w}%;background:var(--cache)"></div></div>
+    <div class="track" style="height:8px"><div class="fill" style="width:${a}%;background:var(--out)"></div></div></div>
+    <div class="val">${valText}</div></div>`;
+}
+
+function renderReportCharts(r) {
+  if (!r) return;
+  const spd = (r.providers || []).slice().sort((a, b) => (b.speed == null ? -1 : b.speed) - (a.speed == null ? -1 : a.speed));
+  const smax = Math.max(0, ...spd.map((p) => p.speed || 0));
+  const fullName = (p) => p.provider + '/' + p.model;
+  $('speed-bars').innerHTML = spd.length ? spd.map((p) => {
+    const pct = smax > 0 && p.speed != null ? Math.max(0.5, (p.speed / smax) * 100) : 0;
+    return `<div class="bar-row"><div class="name" title="${esc(fullName(p))}">${esc(fullName(p))}</div>
+      <div class="track"><div class="fill" style="width:${pct}%;background:var(--in)"></div></div>
+      <div class="val">${fmtSpeed(p.speed)}</div></div>`;
+  }).join('') : '<div class="val">—</div>';
+
+  const agents = r.agents || [];
+  const amax = Math.max(0, ...agents.map((a) => a.wallMs || 0));
+  $('agent-bars').innerHTML = agents.length ? agents.map((a) =>
+    twoBars(a.agent, a.wallMs || 0, a.activeMs || 0, amax,
+      fmtDur(a.wallMs) + ' / ' + fmtDur(a.activeMs), (a.sessions || 0) + ' sessions')
+  ).join('') : '<div class="val">—</div>';
+
+  const sess = r.sessions || [];
+  const xmax = Math.max(0, ...sess.map((s) => s.wallMs || 0));
+  $('session-bars').innerHTML = sess.length ? sess.map((s) =>
+    twoBars(String(s.id).slice(0, 12), s.wallMs || 0, s.activeMs || 0, xmax,
+      fmtDur(s.wallMs) + ' · ' + fmtSpeed(s.speed),
+      (s.title || '') + ' · ' + s.agent + ' · ' + s.provider + '/' + s.model + ' · ' + (s.messages || 0) + ' msgs')
+  ).join('') : '<div class="val">—</div>';
+}
+
 function formatReport(jr) {
   const genTime = jr.generatedAt ? new Date(jr.generatedAt).toLocaleTimeString(lang === 'zh-TW' ? 'zh-TW' : 'en', { hour12: false }) : '?';
   const cachedNote = jr.stale ? ' [⟳ ' + t('updating') + ']' : ' [' + t('cachedAt') + ' ' + genTime + ']';
   const fmtCost = (n) => { const v = parseFloat(n); if (isNaN(v)) return '—'; return v === 0 ? '$0.00' : '$' + v.toFixed(4); };
   const fmtT = (n) => { const v = parseInt(n, 10); if (isNaN(v)) return '—'; if (v >= 1e9) return (v/1e9).toFixed(2)+'B'; if (v >= 1e6) return (v/1e6).toFixed(1)+'M'; if (v >= 1e3) return (v/1e3).toFixed(1)+'K'; return String(v); };
-  const fmtDur = (ms) => { const v = Math.round((ms || 0) / 1000); if (!isFinite(v) || v < 0) return '—'; const d = Math.floor(v / 86400), h = Math.floor(v % 86400 / 3600), m = Math.floor(v % 3600 / 60), s = v % 60; if (d > 0) return d + 'd' + h + 'h'; if (h > 0) return h + 'h' + String(m).padStart(2, '0') + 'm'; if (m > 0) return m + 'm' + String(s).padStart(2, '0') + 's'; return s + 's'; };
   const pad = (s, w) => { s = String(s); return s.length >= w ? s : s + ' '.repeat(w - s.length); };
   const rpad = (s, w) => { s = String(s); return s.length >= w ? s : ' '.repeat(w - s.length) + s; };
   let out = '';
@@ -517,6 +578,7 @@ async function loadReport(days) {
     }
     reportRetry = 0;
     $('reportContent').textContent = formatReport(j.report);
+    renderReportCharts(j.report);
   } catch (e) {
     $('reportContent').textContent = t('connFail') + ': ' + e.message;
   }

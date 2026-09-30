@@ -1,6 +1,6 @@
 {
   "name": "opencode-statboard",
-  "version": "2.1.0",
+  "version": "2.2.0",
   "description": "Real-time dashboard for opencode token usage and cost statistics",
   "main": "server.js",
   "bin": {
@@ -8,7 +8,7 @@
   },
   "scripts": {
     "start": "node server.js",
-    "test": "node --check server.js && node --check check-lib.js && node --check check-stats-verify.js && node --check check-trend-verify.js && node --check check-report-verify.js"
+    "test": "node --check server.js && node --check check-lib.js && node --check check-stats-verify.js && node --check check-trend-verify.js && node --check check-report-verify.js && node --check check-frontend-smoke.js"
   },
   "keywords": [
     "opencode",
