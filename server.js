@@ -10,6 +10,7 @@ const pipelineAsync = promisify(pipeline);
 
 let Database;
 try { Database = require('better-sqlite3'); } catch (_) { Database = null; }
+const pricing = require('./pricing');
 
 const PORT = parseInt(process.env.OC_PORT || '4868', 10);
 const REFRESH_MS = 15000;
@@ -276,6 +277,18 @@ function splitModelName(name) {
   return i < 0 ? { provider: 'unknown', model: String(name) } : { provider: String(name).slice(0, i), model: String(name).slice(i + 1) };
 }
 
+// Market estimate for token usage at catalog paid rates (USD). saved is
+// market minus actual cost. pricedAs records the catalog entry used
+// ("proxy:" prefix = fallback estimate). Null when no pricing catalog.
+// Market-price engine rules live in pricing.js (shared with check scripts).
+function marketOf(tok, provider, model) {
+  const pr = pricing.priceFor(provider, model);
+  if (!pr) return { market: null, saved: null, pricedAs: null };
+  const market = pricing.marketOf(tok, pr);
+  const r4m = (v) => Math.round(v * 10000) / 10000;
+  return { market: r4m(market), saved: r4m(market - (tok.cost || 0)), pricedAs: pr.source };
+}
+
 // Hybrid usage attribution over [startMs, endMs).
 // Why hybrid: session-level totals are COMPLETE (message table only covers
 // ~2026-08 onward; 287/469 sessions in 90d have zero messages) but a
@@ -463,6 +476,29 @@ function getStatsFromDb(days) {
     }))
     .sort((a, b) => b.cost - a.cost);
 
+  // Savings estimate: market value of all-time usage at catalog paid rates.
+  // Basis is session-meta grouping (same rows/basis as the report providers
+  // table) so the two panels agree; message-level model splits would price
+  // model-switched sessions differently.
+  let marketTotal = null, savedTotal = null, priceAsOf = null;
+  {
+    const info = pricing.catalogInfo();
+    if (info.ok) {
+      priceAsOf = new Date(info.mtimeMs).toISOString();
+      marketTotal = 0;
+      const grows = dbQuery(`SELECT COALESCE(json_extract(model,'$.providerID'),'unknown') AS provider, COALESCE(json_extract(model,'$.id'),'unknown') AS model, SUM(tokens_input) AS i, SUM(tokens_output) AS o, SUM(tokens_reasoning) AS r, SUM(tokens_cache_read) AS cr FROM ${schema.session} GROUP BY provider, model`) || [];
+      for (const g of grows) {
+        const mk = marketOf({ input: g.i, output: g.o, reasoning: g.r, cacheRead: g.cr, cost: 0 }, g.provider, g.model);
+        if (mk.market === null) { marketTotal = null; break; }
+        marketTotal += mk.market;
+      }
+      if (marketTotal !== null) {
+        marketTotal = Math.round(marketTotal * 10000) / 10000;
+        savedTotal = Math.round((marketTotal - (costRow ? costRow.total : 0)) * 10000) / 10000;
+      } else { savedTotal = null; }
+    }
+  }
+
   return {
     ok: true,
     overview: {
@@ -480,6 +516,7 @@ function getStatsFromDb(days) {
       reasoning: costRow ? costRow.reasoning : 0,
       cacheRead: costRow ? costRow.cacheRead : 0,
       cacheWrite: costRow ? costRow.cacheWrite : 0,
+      marketTotal, savedTotal, priceAsOf,
     },
     tools,
     models,
@@ -624,7 +661,7 @@ function buildReportFromDb(days) {
   // time). One GROUP BY over the merged message view, mapped onto the same
   // session-meta buckets as tokens so row sets stay identical.
   const msgAgg = {};
-  for (const m of (dbQuery(`SELECT session_id AS sid, COUNT(*) AS n, COALESCE(SUM(CASE WHEN CAST(json_extract(data, '$.tokens.output') AS INTEGER) > 0 AND CAST(json_extract(data, '$.time.completed') AS INTEGER) > CAST(json_extract(data, '$.time.created') AS INTEGER) THEN CAST(json_extract(data, '$.tokens.output') AS INTEGER) ELSE 0 END), 0) AS o, COALESCE(SUM(CASE WHEN CAST(json_extract(data, '$.tokens.output') AS INTEGER) > 0 AND CAST(json_extract(data, '$.time.completed') AS INTEGER) > CAST(json_extract(data, '$.time.created') AS INTEGER) THEN CAST(json_extract(data, '$.time.completed') AS INTEGER) - CAST(json_extract(data, '$.time.created') AS INTEGER) ELSE 0 END), 0) AS ms FROM ${schema.message} WHERE time_created >= ${startMs} AND time_created < ${aNow} GROUP BY sid`) || [])) {
+  for (const m of (dbQuery(`SELECT session_id AS sid, COUNT(*) AS n, COALESCE(SUM(CASE WHEN CAST(json_extract(data, '$.tokens.output') AS INTEGER) > 0 AND CAST(json_extract(data, '$.time.completed') AS INTEGER) > CAST(json_extract(data, '$.time.created') AS INTEGER) THEN CAST(json_extract(data, '$.tokens.output') AS INTEGER) ELSE 0 END), 0) AS o, COALESCE(SUM(CASE WHEN CAST(json_extract(data,'$.tokens.output') AS INTEGER) > 0 AND CAST(json_extract(data,'$.time.completed') AS INTEGER) > CAST(json_extract(data,'$.time.created') AS INTEGER) THEN CAST(json_extract(data,'$.tokens.reasoning') AS INTEGER) ELSE 0 END), 0) AS rq, COALESCE(SUM(CASE WHEN CAST(json_extract(data, '$.tokens.output') AS INTEGER) > 0 AND CAST(json_extract(data, '$.time.completed') AS INTEGER) > CAST(json_extract(data, '$.time.created') AS INTEGER) THEN CAST(json_extract(data, '$.time.completed') AS INTEGER) - CAST(json_extract(data, '$.time.created') AS INTEGER) ELSE 0 END), 0) AS ms FROM ${schema.message} WHERE time_created >= ${startMs} AND time_created < ${aNow} GROUP BY sid`) || [])) {
     msgAgg[m.sid] = m;
   }
   const periodDays = {};
@@ -686,14 +723,16 @@ function buildReportFromDb(days) {
       const meta = metaMap[sid] || { agent: 'unknown', provider: 'unknown', model: 'unknown' };
       const agent = meta.agent || 'unknown';
       const modelName = `${meta.provider}/${meta.model}`;
-      if (!agentAgg[agent]) agentAgg[agent] = { sessions: new Set(), cost: 0, input: 0, output: 0, reasoning: 0, cacheRead: 0, speedOut: 0, speedMs: 0, wallMs: 0, activeMs: 0 };
+      if (!agentAgg[agent]) agentAgg[agent] = { sessions: new Set(), cost: 0, input: 0, output: 0, reasoning: 0, cacheRead: 0, speedOut: 0, speedMs: 0, wallMs: 0, activeMs: 0, market: 0, saved: 0 };
       agentAgg[agent].sessions.add(sid);
       agentAgg[agent].input += ps.input; agentAgg[agent].output += ps.output;
       agentAgg[agent].reasoning += ps.reasoning; agentAgg[agent].cacheRead += ps.cacheRead;
       agentAgg[agent].cost += ps.cost;
-      const mg = msgAgg[sid] || { n: 0, o: 0, ms: 0 };
+      const mg = msgAgg[sid] || { n: 0, o: 0, ms: 0, rq: 0 };
       agentAgg[agent].speedOut += mg.o; agentAgg[agent].speedMs += mg.ms; agentAgg[agent].activeMs += mg.ms;
       agentAgg[agent].wallMs += Math.max(0, (meta.tu || 0) - (meta.tc || 0));
+      const mkA = marketOf({ input: ps.input, output: ps.output, reasoning: ps.reasoning, cacheRead: ps.cacheRead, cost: ps.cost }, meta.provider || 'unknown', meta.model || 'unknown');
+      if (mkA.market !== null) { agentAgg[agent].market += mkA.market; agentAgg[agent].saved += mkA.saved; }
       if (!modelAgg[modelName]) modelAgg[modelName] = { sessions: new Set(), cost: 0, input: 0, output: 0, reasoning: 0, cacheRead: 0, speedOut: 0, speedMs: 0 };
       modelAgg[modelName].sessions.add(sid);
       modelAgg[modelName].input += ps.input; modelAgg[modelName].output += ps.output;
@@ -710,29 +749,37 @@ function buildReportFromDb(days) {
         tok_reasoning: Math.round(m.reasoning), cache_read: Math.round(m.cacheRead),
         speed: m.speedMs > 0 ? Math.round((m.speedOut / (m.speedMs / 1000)) * 10) / 10 : null,
         wallMs: Math.round(m.wallMs), activeMs: Math.round(m.activeMs),
+        market: Math.round(m.market * 10000) / 10000, saved: Math.round(m.saved * 10000) / 10000,
       }))
       .sort((x, y) => y.cost - x.cost);
     var pProviderRows = Object.entries(modelAgg)
       .map(([name, m]) => {
         const { provider, model } = splitModelName(name);
+        const mk = marketOf({ input: m.input, output: m.output, reasoning: m.reasoning, cacheRead: m.cacheRead, cost: m.cost }, provider, model);
         return {
           provider, model, sessions: m.sessions.size, cost: r4(m.cost),
           tok_in: Math.round(m.input), tok_out: Math.round(m.output),
           tok_reasoning: Math.round(m.reasoning), cache_read: Math.round(m.cacheRead),
           speed: m.speedMs > 0 ? Math.round((m.speedOut / (m.speedMs / 1000)) * 10) / 10 : null,
+          market: mk.market, saved: mk.saved, pricedAs: mk.pricedAs,
         };
       })
       .sort((x, y) => y.cost - x.cost);
     var pSessionRows = sessRows
-      .map(({ sid, meta, ps, mg }) => ({
+      .map(({ sid, meta, ps, mg }) => {
+        const mkS = marketOf({ input: ps.input, output: ps.output, reasoning: mg.rq || 0, cacheRead: ps.cacheRead, cost: ps.cost }, meta.provider || 'unknown', meta.model || 'unknown');
+        return {
         id: sid, title: (meta.title || '').slice(0, 40), agent: meta.agent || 'unknown',
         provider: meta.provider || 'unknown', model: meta.model || 'unknown',
         wallMs: Math.max(0, (meta.tu || 0) - (meta.tc || 0)),
         activeMs: mg.ms || 0, messages: mg.n || 0,
         tok_in: Math.round(ps.input), tok_out: Math.round(ps.output),
+        tok_reasoning: Math.round(mg.rq || 0),
         cost: r4(ps.cost),
         speed: (mg.ms || 0) > 0 ? Math.round(((mg.o || 0) / (mg.ms / 1000)) * 10) / 10 : null,
-      }))
+        market: mkS.market, saved: mkS.saved, pricedAs: mkS.pricedAs,
+        };
+      })
       .sort((x, y) => y.wallMs - x.wallMs)
       .slice(0, 20);
   } else {
@@ -741,6 +788,12 @@ function buildReportFromDb(days) {
     var pSessionRows = [];
   }
 
+  const sumMkt = (rows) => rows.reduce((s, r) => s + (r.market || 0), 0);
+  statsR.cost.marketTotal = Math.round(sumMkt(pProviderRows) * 10000) / 10000;
+  statsR.cost.savedTotal = Math.round((sumMkt(pProviderRows) - t.cost) * 10000) / 10000;
+  statsR.cost.savedPct = statsR.cost.marketTotal > 0 ? Math.round((statsR.cost.savedTotal / statsR.cost.marketTotal) * 1000) / 10 : null;
+  statsR.cost.priceAsOf = pricing.catalogInfo().ok ? new Date(pricing.catalogInfo().mtimeMs).toISOString() : null;
+
   return {
     label,
     days,
@@ -748,6 +801,7 @@ function buildReportFromDb(days) {
     agents: pAgentRows,
     providers: pProviderRows,
     sessions: pSessionRows,
+    priceAsOf: statsR.cost.priceAsOf,
     generatedAt: now,
   };
 }

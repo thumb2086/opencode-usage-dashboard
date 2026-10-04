@@ -45,6 +45,26 @@ const { openDb, fetchJson, computeHybrid, detectTables } = require('./check-lib'
   chkGrow('avgTokensSession', d.cost.avgTokensSession, Math.round(avg));
   chk('medianTokensSession', d.cost.medianTokensSession, Math.round(med));
 
+  // savings: session-meta grouping over the merged session view (same basis
+  // as the server overview market, so the two panels agree).
+  {
+    const pricing = require('./pricing');
+    const grows = db.prepare(`SELECT COALESCE(json_extract(model,'$.providerID'),'unknown') AS provider, COALESCE(json_extract(model,'$.id'),'unknown') AS model, SUM(tokens_input) AS i, SUM(tokens_output) AS o, SUM(tokens_reasoning) AS r, SUM(tokens_cache_read) AS cr FROM ${T.session} GROUP BY provider, model`).all();
+    let expMarket = 0, hasNull = false;
+    for (const g of grows) {
+      const pr = pricing.priceFor(g.provider, g.model);
+      if (!pr) { hasNull = true; break; }
+      expMarket += pricing.marketOf({ input: g.i, output: g.o, reasoning: g.r, cacheRead: g.cr }, pr) || 0;
+    }
+    if (!hasNull) {
+      expMarket = Math.round(expMarket * 10000) / 10000;
+      chkGrow('cost.marketTotal', d.cost.marketTotal, expMarket, Math.max(0.05, expMarket * 0.02));
+      chkGrow('cost.savedTotal', d.cost.savedTotal, Math.round((expMarket - cs.c) * 10000) / 10000, Math.max(0.05, expMarket * 0.02));
+    } else {
+      console.log('SKIP cost.marketTotal: no pricing catalog');
+    }
+  }
+
   // tools. V1: frozen part table (exact via time-travel). V2: tool parts are
   // embedded in session_message content plus parts of never-migrated messages
   // in `part` (mirrors server's union — everything else would double count).

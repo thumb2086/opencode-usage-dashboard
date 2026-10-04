@@ -76,6 +76,14 @@ function makeEl() {
   chk('session-bars has session ids', r.sessions.every((s) => sess.includes(String(s.id).slice(0, 12))));
   chk('model-rows has speed col', ((els['model-rows'] || {}).innerHTML || '').includes('tok/s'));
   chk('text report keeps SESSIONS', ((els['reportContent'] || {}).textContent || '').includes('SESSIONS'));
+  chk('savings-bars row count', rows('savings-bars').length === r.providers.length);
+  chk('savings-bars has $', ((els['savings-bars'] || {}).innerHTML || '').includes('$'));
+  chk('text report has PRICING', ((els['reportContent'] || {}).textContent || '').includes('PRICING'));
+  const detailsCount = (html.match(/<details class="tool-section"/g) || []).length;
+  chk('10 collapsible sections', detailsCount === 10);
+  chk('sections have ids', ['sec-overview', 'sec-tokens', 'sec-tools', 'sec-models', 'sec-trend', 'sec-report', 'sec-speed', 'sec-agent', 'sec-sessions', 'sec-savings'].every((id) => html.includes('id="' + id + '"')));
+  chk('ov-market shows $', ((els['ov-market'] || {}).textContent || '').includes('$'));
+  chk('ov-saved shows $', ((els['ov-saved'] || {}).textContent || '').includes('$'));
   console.log(fails === 0 ? 'VERIFY PASS' : `VERIFY FAIL (${fails})`);
   process.exit(fails === 0 ? 0 : 1);
 })().catch((e) => { console.log('ERROR:', e.message); process.exit(2); });
