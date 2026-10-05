@@ -11,6 +11,7 @@ Real-time dashboard for your [opencode](https://opencode.ai) token usage and cos
 - Usage reports: per-agent speed, wall/active time, and top-20 sessions by duration
 - Savings estimate: market value at paid catalog rates vs actual cost (per-model, per-report, overview cards)
 - Visual charts for model speed, agent wall/active time, and longest sessions
+- Visual usage-report tables (providers, agents, sessions) with collapsible raw text
 - Collapsible sections (collapse state remembered in browser)
 - Daily trend chart (7D / 30D / 90D)
 - Usage reports: Daily / Weekly / Monthly / All time

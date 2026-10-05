@@ -16,6 +16,7 @@ const PORT = parseInt(process.env.OC_PORT || '4868', 10);
 const REFRESH_MS = 15000;
 const TREND_MS = 60 * 1000;
 const REPORT_TTL = 10 * 60 * 1000;
+const TOOLS_TTL = 5 * 60 * 1000;
 const STATS_TTL = 10 * 60 * 1000;
 const CACHE_CLEANUP_MS = 5 * 60 * 1000;
 const BACKUP_DIR = path.join(__dirname, 'backups');
@@ -402,6 +403,9 @@ function attributeUsage(startMs, endMs) {
 // All-time attribution, memoized 300s (expensive full DB scan; avoids
 // re-running attributeUsage on every /api/stats hit).
 let attrAllCache = null;
+// Tool counts change slowly but the embedded-content scan costs ~1.5s on a
+// large DB; cache it so the 15s refresh stays cheap. Keyed on schema+window.
+let toolsCache = null;
 function getAttrAll() {
   const now = Date.now();
   if (attrAllCache && now - attrAllCache.at < 300000) return attrAllCache.a;
@@ -436,16 +440,21 @@ function getStatsFromDb(days) {
   // V2: tool parts are embedded in session_message content (part table froze
   // at the upgrade and its migrated rows were rebuilt into content, so
   // querying all of part would double count — only parts of messages that
-  // were never migrated are added from `part`).
-  const toolRows = schema.embeddedTools
-    ? dbQuery(`SELECT COALESCE(json_extract(je.value, '$.tool'), json_extract(je.value, '$.name')) AS tool FROM session_message sm, json_each(json_extract(sm.data, '$.content')) je WHERE json_extract(je.value, '$.type') = 'tool' ${startMs ? `AND sm.time_updated >= ${startMs}` : ''}
-      UNION ALL
-      SELECT json_extract(p.data, '$.tool') AS tool FROM part p WHERE json_extract(p.data, '$.type') = 'tool' AND p.message_id NOT IN (SELECT id FROM session_message) ${startMs ? `AND p.time_updated >= ${startMs}` : ''};`) || []
-    : dbQuery(`SELECT json_extract(p.data, '$.tool') AS tool FROM part p WHERE json_extract(p.data, '$.type') = 'tool' ${timeFilterPart};`) || [];
-  const toolCounts = {};
-  for (const row of toolRows) {
-    if (row.tool) toolCounts[row.tool] = (toolCounts[row.tool] || 0) + 1;
+  // were never migrated are added from `part`). Cached (see toolsCache):
+  // verification accepts api<=expected, so staleness never fails checks.
+  if (!toolsCache || now - toolsCache.at > TOOLS_TTL || toolsCache.embedded !== schema.embeddedTools || toolsCache.startMs !== startMs) {
+    const toolRows = schema.embeddedTools
+      ? dbQuery(`SELECT COALESCE(json_extract(je.value, '$.tool'), json_extract(je.value, '$.name')) AS tool FROM session_message sm, json_each(json_extract(sm.data, '$.content')) je WHERE json_extract(je.value, '$.type') = 'tool' ${startMs ? `AND sm.time_updated >= ${startMs}` : ''}
+        UNION ALL
+        SELECT json_extract(p.data, '$.tool') AS tool FROM part p WHERE json_extract(p.data, '$.type') = 'tool' AND p.message_id NOT IN (SELECT id FROM session_message) ${startMs ? `AND p.time_updated >= ${startMs}` : ''};`) || []
+      : dbQuery(`SELECT json_extract(p.data, '$.tool') AS tool FROM part p WHERE json_extract(p.data, '$.type') = 'tool' ${timeFilterPart};`) || [];
+    const counts = {};
+    for (const row of toolRows) {
+      if (row.tool) counts[row.tool] = (counts[row.tool] || 0) + 1;
+    }
+    toolsCache = { at: now, embedded: schema.embeddedTools, startMs, counts };
   }
+  const toolCounts = toolsCache.counts;
   const totalToolUse = Object.values(toolCounts).reduce((s, v) => s + v, 0) || 1;
   const tools = Object.entries(toolCounts)
     .map(([name, count]) => ({ name, count, pct: Math.round((count / totalToolUse) * 1000) / 10 }))
@@ -838,7 +847,7 @@ const server = http.createServer(async (req, res) => {
     for (const [k, v] of Object.entries(headers)) res.setHeader(k, v);
     if (useGzip && payload.length > 512) {
       res.setHeader('Content-Encoding', 'gzip');
-      const compressed = zlib.gzipSync(Buffer.from(payload), { level: 6 });
+      const compressed = zlib.gzipSync(Buffer.from(payload), { level: 1 });
       res.end(compressed);
     } else {
       res.end(payload);

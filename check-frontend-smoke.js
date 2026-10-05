@@ -75,11 +75,13 @@ function makeEl() {
   chk('session-bars row count', rows('session-bars').length === r.sessions.length);
   chk('session-bars has session ids', r.sessions.every((s) => sess.includes(String(s.id).slice(0, 12))));
   chk('model-rows has speed col', ((els['model-rows'] || {}).innerHTML || '').includes('tok/s'));
-  chk('text report keeps SESSIONS', ((els['reportContent'] || {}).textContent || '').includes('SESSIONS'));
+  chk('report has SESSIONS block', ((els['reportContent'] || {}).innerHTML || '').includes('SESSIONS'));
   chk('savings-bars row count', rows('savings-bars').length === r.providers.length);
   chk('savings-bars has $', ((els['savings-bars'] || {}).innerHTML || '').includes('$'));
-  chk('text report has PRICING', ((els['reportContent'] || {}).textContent || '').includes('PRICING'));
-  const detailsCount = (html.match(/<details class="tool-section"/g) || []).length;
+  chk('report has PRICING block', ((els['reportContent'] || {}).innerHTML || '').includes('PRICING'));
+  chk('report tables rendered', (((els['reportContent'] || {}).innerHTML || '').match(/<table/g) || []).length >= 3);
+  chk('report raw block kept', ((els['reportContent'] || {}).innerHTML || '').includes('rep-pre'));
+  const detailsCount = (html.match(/<details class="tool-section" open id="/g) || []).length;
   chk('10 collapsible sections', detailsCount === 10);
   chk('sections have ids', ['sec-overview', 'sec-tokens', 'sec-tools', 'sec-models', 'sec-trend', 'sec-report', 'sec-speed', 'sec-agent', 'sec-sessions', 'sec-savings'].every((id) => html.includes('id="' + id + '"')));
   chk('ov-market shows $', ((els['ov-market'] || {}).textContent || '').includes('$'));

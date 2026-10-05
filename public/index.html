@@ -36,6 +36,14 @@
   .bar-row { display: grid; grid-template-columns: 150px 1fr 120px; align-items: center; gap: 12px; padding: 7px 0; font-size: 13px; }
   .bar-row .name { color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .bar-row .val { text-align: right; font-variant-numeric: tabular-nums; }
+  .bar-row.wide { grid-template-columns: minmax(220px, 320px) 1fr 120px; }
+  .bar-row.wide .name { font-size: 12px; }
+  .scrollx { overflow-x: auto; }
+  .scrollx table { min-width: 880px; }
+  td.clip { max-width: 240px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .rep-head { color: var(--muted); font-size: 12px; margin-bottom: 12px; }
+  .rep-hint { color: var(--muted); font-size: 12px; font-weight: 400; }
+  .rep-pre { font-family: monospace; font-size: 13px; line-height: 1.6; white-space: pre; overflow-x: auto; color: var(--text); margin: 0; }
   .track { background: #21262d; border-radius: 4px; height: 12px; overflow: hidden; }
   .fill { height: 100%; border-radius: 4px; transition: width .6s ease; min-width: 1px; }
   .stack { display: flex; height: 100%; }
@@ -215,7 +223,7 @@ const STRINGS = {
     totalCost: 'Total Cost', avgCostDay: 'Avg Cost / Day',
     avgTokensSession: 'Avg Tokens / Session', medianTokensSession: 'Median Tokens / Session', marketValue: 'Market Value', saved: 'Saved', savings: 'SAVINGS',
     tokenStats: 'TOKEN STATISTICS', toolUsage: 'TOOL USAGE', modelUsage: 'MODEL USAGE',
-    thModel: 'Model', thMsgs: 'Messages', thSpeed: 'Speed', thUsage: 'Usage', thCost: 'Cost',
+    thModel: 'Model', thMsgs: 'Messages', thSpeed: 'Speed', thUsage: 'Usage', thCost: 'Cost', repProviders: 'PROVIDERS & MODELS', repAgents: 'AGENTS', repSessions: 'SESSIONS', repPricing: 'PRICING BASIS', repRaw: 'RAW TEXT',
     dailyTrend: 'DAILY TREND ({days} DAYS)',
     inputDay: 'Input / Day', outputDay: 'Output / Day', cacheReadDay: 'Cache Read / Day', costDay: 'Cost / Day',
     report: 'USAGE REPORT', all: 'All', daily: 'Daily', weekly: 'Weekly', monthly: 'Monthly', modelSpeed: 'MODEL SPEED', agentTime: 'AGENT TIME', topSessions: 'TOP SESSIONS',
@@ -232,7 +240,7 @@ const STRINGS = {
     totalCost: '總費用', avgCostDay: '平均費用 / 天',
     avgTokensSession: '平均 tokens / 場', medianTokensSession: '中位數 tokens / 場', marketValue: '市價', saved: '已節省', savings: '節省金額',
     tokenStats: 'Tokens 統計', toolUsage: '工具使用', modelUsage: '模型使用',
-    thModel: '模型', thMsgs: '訊息', thSpeed: '速度', thUsage: '用量', thCost: '費用',
+    thModel: '模型', thMsgs: '訊息', thSpeed: '速度', thUsage: '用量', thCost: '費用', repProviders: '供應商與模型', repAgents: '代理', repSessions: '場次', repPricing: '定價依據', repRaw: '原始文字',
     dailyTrend: '近 {days} 天趨勢',
     inputDay: 'Input / 天', outputDay: 'Output / 天', cacheReadDay: 'Cache Read / 天', costDay: '費用 / 天',
     report: '用量報告', all: '全部', daily: '每日', weekly: '每週', monthly: '每月', modelSpeed: '模型速度', agentTime: '代理時間', topSessions: '最長場次',
@@ -513,7 +521,7 @@ function renderReportCharts(r) {
   const fullName = (p) => p.provider + '/' + p.model;
   $('speed-bars').innerHTML = spd.length ? spd.map((p) => {
     const pct = smax > 0 && p.speed != null ? Math.max(0.5, (p.speed / smax) * 100) : 0;
-    return `<div class="bar-row"><div class="name" title="${esc(fullName(p))}">${esc(fullName(p))}</div>
+    return `<div class="bar-row wide"><div class="name" title="${esc(fullName(p))}">${esc(fullName(p))}</div>
       <div class="track"><div class="fill" style="width:${pct}%;background:var(--in)"></div></div>
       <div class="val">${fmtSpeed(p.speed)}</div></div>`;
   }).join('') : '<div class="val">—</div>';
@@ -539,10 +547,59 @@ function renderReportCharts(r) {
     const pct = mmax > 0 ? Math.max(0.5, ((p.market || 0) / mmax) * 100) : 0;
     const sv = p.saved == null ? '—' : fmtCost(p.saved) + ' saved';
     const tip = 'market ' + fmtCost(p.market) + ' · actual ' + fmtCost(p.cost) + ' · via ' + (p.pricedAs || '?');
-    return `<div class="bar-row"><div class="name" title="${esc(fullName(p))}">${esc(fullName(p))}</div>
+    return `<div class="bar-row wide"><div class="name" title="${esc(fullName(p))}">${esc(fullName(p))}</div>
       <div class="track"><div class="fill" style="width:${pct}%;background:var(--cost)"></div></div>
       <div class="val" title="${esc(tip)}">${sv}</div></div>`;
   }).join('') : '<div class="val">—</div>';
+}
+
+function repTable(heads, rows) {
+  return `<div class="scrollx"><table><thead><tr>${heads.map((h) => `<th>${esc(h)}</th>`).join('')}</tr></thead><tbody>${rows.join('')}</tbody></table></div>`;
+}
+
+function repBlock(title, hint, body, isOpen) {
+  return `<details class="tool-section"${isOpen ? ' open' : ''}><summary><h2>${esc(title)}</h2><span class="rep-hint">${esc(hint)}</span></summary>${body}</details>`;
+}
+
+function renderReportTables(r) {
+  const o = (r.stats && r.stats.overview) || {};
+  const c = (r.stats && r.stats.cost) || {};
+  const genTime = r.generatedAt ? new Date(r.generatedAt).toLocaleTimeString(lang === 'zh-TW' ? 'zh-TW' : 'en', { hour12: false }) : '?';
+  const periodText = r.days === -1 ? 'All time' : r.days <= 1 ? 'Today (local)' : r.days <= 7 ? 'Last 7 days (local)' : 'Month to date (local)';
+  let h = `<div class="rep-head">OPENCODE USAGE STATEMENT · ${esc(r.label || '')} · ${esc(periodText)} · ${esc(r.stale ? '⟳ ' + t('updating') : t('cachedAt') + ' ' + genTime)}</div>`;
+  h += `<div class="cards">` + [
+    [t('sessions'), fmt(o.sessions)], [t('messages'), fmt(o.messages)],
+    [t('totalCost'), fmtCost(c.total)], [t('marketValue'), fmtCost(c.marketTotal)],
+    [t('saved'), fmtCost(c.savedTotal)],
+  ].map(([l, v]) => `<div class="card"><div class="l">${esc(l)}</div><div class="v" style="font-size:20px">${esc(String(v))}</div></div>`).join('') + `</div>`;
+
+  const prov = r.providers || [];
+  h += repBlock(t('repProviders'), prov.length + ' models' + (prov.length ? ' · ' + prov[0].provider + '/' + prov[0].model : ''),
+    repTable(['Model', 'Sess', 'Cost', 'In', 'Out', 'Cache', 'Speed', 'Market', 'Saved'], prov.map((p) => {
+      const name = p.provider + '/' + p.model;
+      return `<tr><td class="clip" title="${esc(name)}">${esc(name)}</td><td>${p.sessions}</td><td>${fmtCost(p.cost)}</td><td>${fmt(p.tok_in)}</td><td>${fmt(p.tok_out)}</td><td>${fmt(p.cache_read)}</td><td>${fmtSpeed(p.speed)}</td><td>${fmtCost(p.market)}</td><td>${fmtCost(p.saved)}</td></tr>`;
+    })), true);
+
+  const ags = r.agents || [];
+  h += repBlock(t('repAgents'), ags.length + ' agents' + (ags.length ? ' · ' + ags[0].agent : ''),
+    repTable(['Agent', 'Sess', 'Cost', 'In', 'Out', 'Speed', 'Wall', 'Active', 'Market', 'Saved'], ags.map((a) =>
+      `<tr><td>${esc(a.agent)}</td><td>${a.sessions}</td><td>${fmtCost(a.cost)}</td><td>${fmt(a.tok_in)}</td><td>${fmt(a.tok_out)}</td><td>${fmtSpeed(a.speed)}</td><td>${fmtDur(a.wallMs)}</td><td>${fmtDur(a.activeMs)}</td><td>${fmtCost(a.market)}</td><td>${fmtCost(a.saved)}</td></tr>`)), true);
+
+  const sess = r.sessions || [];
+  h += repBlock(t('repSessions'), 'top ' + sess.length + ' by wall',
+    repTable(['Session', 'Agent', 'Model', 'Wall', 'Active', 'Msgs', 'In', 'Out', 'Speed', 'Saved'], sess.map((s) => {
+      const name = s.provider + '/' + s.model;
+      return `<tr><td class="clip" title="${esc(s.id + ' · ' + (s.title || ''))}">${esc(String(s.id).slice(0, 12))}</td><td>${esc(s.agent)}</td><td class="clip" title="${esc(name)}">${esc(name)}</td><td>${fmtDur(s.wallMs)}</td><td>${fmtDur(s.activeMs)}</td><td>${s.messages}</td><td>${fmt(s.tok_in)}</td><td>${fmt(s.tok_out)}</td><td>${fmtSpeed(s.speed)}</td><td>${fmtCost(s.saved)}</td></tr>`;
+    })), true);
+
+  const basis = prov.filter((p) => p.pricedAs && p.pricedAs !== (p.provider + '/' + p.model));
+  if (basis.length) {
+    h += repBlock(t('repPricing'), basis.length + ' mappings',
+      repTable(['Usage', 'Basis'], basis.map((p) =>
+        `<tr><td class="clip" title="${esc(p.provider + '/' + p.model)}">${esc(p.provider + '/' + p.model)}</td><td class="clip" title="${esc(p.pricedAs)}">${esc(p.pricedAs)}</td></tr>`)), false);
+  }
+  h += repBlock(t('repRaw'), 'statement text', `<pre class="rep-pre">${esc(formatReport(r))}</pre>`, false);
+  return h;
 }
 
 function formatReport(jr) {
@@ -624,7 +681,7 @@ async function loadReport(days) {
       return;
     }
     reportRetry = 0;
-    $('reportContent').textContent = formatReport(j.report);
+    $('reportContent').innerHTML = renderReportTables(j.report);
     renderReportCharts(j.report);
   } catch (e) {
     $('reportContent').textContent = t('connFail') + ': ' + e.message;

@@ -15,13 +15,19 @@ function openDb() {
 
 async function fetchJson(url, retries = 20) {
   for (let i = 0; i < retries; i++) {
-    const r = await fetch(url, { cache: 'no-store' });
-    const j = await r.json();
-    if (j.report !== undefined && !j.ready) {
+    try {
+      const r = await fetch(url, { cache: 'no-store' });
+      const j = await r.json();
+      if (j.report !== undefined && !j.ready) {
+        await new Promise((s) => setTimeout(s, 1500));
+        continue;
+      }
+      return j;
+    } catch (e) {
+      // Transient loopback hiccup (server busy in a long sync build):
+      // wait and retry instead of failing verification.
       await new Promise((s) => setTimeout(s, 1500));
-      continue;
     }
-    return j;
   }
   throw new Error('not ready: ' + url);
 }

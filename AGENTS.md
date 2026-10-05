@@ -120,7 +120,7 @@ npm install -g opencode-statboard   # after the Actions run is green
 - `better-sqlite3` is a native addon; must match Node.js ABI
 - `attributeUsage` does a full DB scan (~35k messages); cached 300s via `getAttrAll()`
 - Trend buckets are sliced from the same `getAttrAll()` attribution the report uses — never a separate windowed call (windowed calls inflate in-window days via residual growth; fixed 2026-09-29 after measuring +0.25–1.7M input/day). Remaining panel differences are cache ages only (trend ≤60s, report ≤10min, both timestamps shown)
-- V2 tool counts use `json_each` over `session_message` content (~1.2s full scan) and run on every 15s refresh; legacy V1 DBs scan `part` instead (~0.8s)
+- V2 tool counts use `json_each` over `session_message` content (~1.5s full scan), cached 5min via `toolsCache` (the 15s refresh serves cache; verification accepts api<=expected so staleness never fails checks); legacy V1 DBs scan `part` instead
 - OpenCode V2 writes `cost = 0` for free/subscription providers, so $ totals only reflect paid (per-token billed) usage — same field, not a schema issue
 - `gzip` compression on all `/api/` responses (>512B, level 1 for speed)
 - Backup is deferred 30s after startup — heavy disk I/O (500MB copy+compress) during startup causes Windows to terminate the process
