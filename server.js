@@ -949,6 +949,7 @@ const server = http.createServer(async (req, res) => {
         return;
       }
       res.setHeader('Content-Type', 'text/html; charset=utf-8');
+      res.setHeader('Cache-Control', 'no-store');
       res.end(data.replace('__VERSION__', VERSION));
     });
   } else {
