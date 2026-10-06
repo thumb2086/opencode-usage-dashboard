@@ -822,13 +822,16 @@ function refreshReport(days) {
   if (fresh) return { report: hit, ready: true };
   if (!reportBusy[key]) {
     reportBusy[key] = true;
-    try {
-      const r = buildReportFromDb(days);
-      if (r && r.stats && r.stats.ok) {
-        reportCache[key] = r;
+    setImmediate(() => {
+      try {
+        const r = buildReportFromDb(days);
+        if (r && r.stats && r.stats.ok) {
+          reportCache[key] = r;
+        }
+      } catch (_) {} finally {
+        delete reportBusy[key];
       }
-    } catch (_) {}
-    delete reportBusy[key];
+    });
   }
   return hit ? { report: Object.assign({}, hit, { stale: true }), ready: true } : { report: null, ready: false };
 }
