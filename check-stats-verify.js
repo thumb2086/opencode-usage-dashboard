@@ -1,6 +1,11 @@
-// Verify /api/stats overview + models + tools against direct SQL.
-// Time-travel where possible via data.generatedAt.
+// Verify /api/stats overview + models + tools against independent hybrid.
+// Overview is ALL TIME and shares the trend/report attribution basis
+// (message layer authoritative + session residual), so expected values come
+// from computeHybrid's totals, not raw session-table SUM.
+// Time-travel where possible via data.generatedAt; live chat can only make the
+// DB larger, so growth-only drift is accepted when the shape matches.
 const { openDb, fetchJson, computeHybrid, detectTables } = require('./check-lib');
+const pricing = require('./pricing');
 
 (async () => {
   const j = await fetchJson(`http://127.0.0.1:4868/api/stats?days=7&_=${Date.now()}`);
@@ -14,52 +19,52 @@ const { openDb, fetchJson, computeHybrid, detectTables } = require('./check-lib'
     if (!ok) fails++;
     console.log(`${ok ? 'OK  ' : 'FAIL'} ${name}: api=${a} expected=${e}`);
   };
-
-  const sess = db.prepare(`SELECT COUNT(*) c FROM ${T.session}`).get().c;
-  chk('overview.sessions', d.overview.sessions, sess);
-  const sessEqual = d.overview.sessions === sess;
-  // Monotonic totals: our own chat appends tokens between state refresh
-  // (15s) and this check, so accept exact or growth-only drift (api<=fresh)
-  // when the session set is unchanged.
+  // Live chat appends tokens between the 15s refresh and this check.
   const chkGrow = (name, a, e, tol = 0) => {
-    const ok = Math.abs(a - e) <= tol || (sessEqual && a <= e);
+    const ok = Math.abs(a - e) <= tol || (a <= e && Math.abs(a - e) <= Math.max(tol, Math.abs(e) * 0.02));
     if (!ok) fails++;
     console.log(`${ok ? 'OK  ' : 'FAIL'} ${name}: api=${a} expected=${e}${ok && Math.abs(a - e) > tol ? ' (live-growth, accepted)' : ''}`);
   };
-  const msg = db.prepare(`SELECT COUNT(*) c FROM ${T.message} m WHERE m.time_created < ?`).get(endMs).c;
-  chk('overview.messages', d.overview.messages, msg);
-  const days = db.prepare(`SELECT COUNT(DISTINCT date(time_updated/1000,'unixepoch','localtime')) c FROM ${T.session}`).get().c;
-  chk('overview.days(local)', d.overview.days, days);
-  const cs = db.prepare(`SELECT COALESCE(SUM(tokens_input),0) i, COALESCE(SUM(tokens_output),0) o, COALESCE(SUM(tokens_reasoning),0) r, COALESCE(SUM(tokens_cache_read),0) cr, COALESCE(SUM(tokens_cache_write),0) cw, COALESCE(SUM(cost),0) c FROM ${T.session}`).get();
-  chkGrow('cost.input', d.cost.input, cs.i);
-  chkGrow('cost.output', d.cost.output, cs.o);
-  chkGrow('cost.reasoning', d.cost.reasoning, cs.r);
-  chkGrow('cost.cacheRead', d.cost.cacheRead, cs.cr);
-  chk('cost.cacheWrite', d.cost.cacheWrite, cs.cw);
-  chkGrow('cost.total', d.cost.total, cs.c, 1e-9);
-  chk('cost.avgDay', d.cost.avgDay, cs.c / (days || 1), 1e-9);
-  const toks = db.prepare(`SELECT tokens_input+tokens_output+tokens_reasoning t FROM ${T.session}`).all().map((r) => r.t);
-  const avg = toks.reduce((s, v) => s + v, 0) / toks.length;
-  const sorted = toks.slice().sort((a, b) => a - b);
-  const med = sorted.length % 2 ? sorted[Math.floor(sorted.length / 2)] : (sorted[sorted.length / 2 - 1] + sorted[sorted.length / 2]) / 2;
-  chkGrow('avgTokensSession', d.cost.avgTokensSession, Math.round(avg));
-  chk('medianTokensSession', d.cost.medianTokensSession, Math.round(med));
 
-  // savings: session-meta grouping over the merged session view (same basis
-  // as the server overview market, so the two panels agree).
+  const exp = computeHybrid(db, 0, endMs);
+  const tt = exp.totals;
+  chk('overview.sessions', d.overview.sessions, tt.sessions);
+  chkGrow('overview.messages', d.overview.messages, tt.messages);
+  const activeDays = Object.keys(exp.perDay).filter((k) => exp.perDay[k].date.getFullYear() >= 2020).length || 1;
+  chk('overview.days(>=2020 buckets)', d.overview.days, activeDays);
+  chkGrow('cost.input', d.cost.input, Math.round(tt.input), 1);
+  chkGrow('cost.output', d.cost.output, Math.round(tt.output), 1);
+  chkGrow('cost.reasoning', d.cost.reasoning, Math.round(tt.reasoning), 1);
+  chkGrow('cost.cacheRead', d.cost.cacheRead, Math.round(tt.cacheRead), 1);
+  chk('cost.cacheWrite', d.cost.cacheWrite, Math.round(tt.cacheWrite), 1);
+  chkGrow('cost.total', d.cost.total, tt.cost, 1e-9);
+  chk('cost.avgDay', d.cost.avgDay, tt.cost / activeDays, 1e-9);
+  const sessVals = Object.values(exp.perSession)
+    .filter((s) => s.input > 0 || s.output > 0 || s.reasoning > 0)
+    .map((s) => s.input + s.output + s.reasoning)
+    .filter(Number.isFinite);
+  const avg = sessVals.length ? sessVals.reduce((s, v) => s + v, 0) / sessVals.length : 0;
+  const sorted = sessVals.slice().sort((a, b) => a - b);
+  const med = sorted.length ? (sorted.length % 2 ? sorted[Math.floor(sorted.length / 2)] : (sorted[Math.floor(sorted.length / 2) - 1] + sorted[Math.floor(sorted.length / 2)]) / 2) : 0;
+  chkGrow('avgTokensSession', d.cost.avgTokensSession, Math.round(avg), 1);
+  chk('medianTokensSession', d.cost.medianTokensSession, Math.round(med), 1);
+
+  // savings: priced per MESSAGE model (same perModel buckets as server), so
+  // overview and the report providers table share one basis.
   {
-    const pricing = require('./pricing');
-    const grows = db.prepare(`SELECT COALESCE(json_extract(model,'$.providerID'),'unknown') AS provider, COALESCE(json_extract(model,'$.id'),'unknown') AS model, SUM(tokens_input) AS i, SUM(tokens_output) AS o, SUM(tokens_reasoning) AS r, SUM(tokens_cache_read) AS cr FROM ${T.session} GROUP BY provider, model`).all();
     let expMarket = 0, hasNull = false;
-    for (const g of grows) {
-      const pr = pricing.priceFor(g.provider, g.model);
+    for (const [name, m] of Object.entries(exp.perModel)) {
+      const i = name.indexOf('/');
+      const provider = i < 0 ? 'unknown' : name.slice(0, i);
+      const model = i < 0 ? name : name.slice(i + 1);
+      const pr = pricing.priceFor(provider, model);
       if (!pr) { hasNull = true; break; }
-      expMarket += pricing.marketOf({ input: g.i, output: g.o, reasoning: g.r, cacheRead: g.cr }, pr) || 0;
+      expMarket += pricing.marketOf({ input: m.input, output: m.output, reasoning: m.reasoning, cacheRead: m.cacheRead }, pr) || 0;
     }
     if (!hasNull) {
       expMarket = Math.round(expMarket * 10000) / 10000;
       chkGrow('cost.marketTotal', d.cost.marketTotal, expMarket, Math.max(0.05, expMarket * 0.02));
-      chkGrow('cost.savedTotal', d.cost.savedTotal, Math.round((expMarket - cs.c) * 10000) / 10000, Math.max(0.05, expMarket * 0.02));
+      chkGrow('cost.savedTotal', d.cost.savedTotal, Math.round((expMarket - tt.cost) * 10000) / 10000, Math.max(0.05, expMarket * 0.02));
     } else {
       console.log('SKIP cost.marketTotal: no pricing catalog');
     }
@@ -68,9 +73,8 @@ const { openDb, fetchJson, computeHybrid, detectTables } = require('./check-lib'
   // tools. V1: frozen part table (exact via time-travel). V2: tool parts are
   // embedded in session_message content plus parts of never-migrated messages
   // in `part` (mirrors server's union — everything else would double count).
-  // Embedded content keeps mutating inside existing messages while streaming,
-  // so accept api <= expected (stale snapshot) but never api > expected
-  // (which would expose double counting).
+  // Embedded content keeps mutating while streaming, so accept api <= expected
+  // (stale snapshot) but never api > expected (which would double count).
   let tools = [];
   if (T.embeddedTools) {
     const emb = db.prepare(`SELECT COALESCE(json_extract(je.value,'$.tool'), json_extract(je.value,'$.name')) t, COUNT(*) c FROM session_message sm, json_each(json_extract(sm.data,'$.content')) je WHERE json_extract(je.value,'$.type')='tool' AND sm.time_created < ? GROUP BY t`).all(endMs);
@@ -93,14 +97,13 @@ const { openDb, fetchJson, computeHybrid, detectTables } = require('./check-lib'
     chkLe(`tools[${e.t}].count`, (d.tools.find((x) => x.name === e.t) || {}).count || 0, e.c);
   }
 
-  // models: true message counts + hybrid token sums
-  const exp = computeHybrid(db, 0, endMs);
+  // models: true message counts + hybrid token sums (all-time buckets)
   const expModels = Object.entries(exp.perModel).map(([name, m]) => ({ name, n: m.messages }))
     .sort((a, b) => b.n - a.n).slice(0, 5);
   const apiByName = {};
   for (const m of d.models) apiByName[m.name] = m;
   for (const e of expModels) {
-    chk(`models[${e.name}].messages`, (apiByName[e.name] || {}).messages, e.n);
+    chkGrow(`models[${e.name}].messages`, (apiByName[e.name] || {}).messages, e.n);
   }
   const eTop = Object.entries(exp.perModel).sort((a, b) => b[1].cost - a[1].cost)[0];
   if (eTop) {
@@ -109,7 +112,6 @@ const { openDb, fetchJson, computeHybrid, detectTables } = require('./check-lib'
     chk(`models[${eTop[0]}].cost`, aTop.cost, eTop[1].cost, 1e-6);
   }
   // speed: message-level output tok/s for the top-cost model, independent SQL
-  // (same merged message view, same completed/output>0 filter as server).
   if (eTop) {
     const rows = db.prepare(`SELECT COALESCE(json_extract(data,'$.providerID'),json_extract(data,'$.model.providerID'),'unknown')||'/'||COALESCE(json_extract(data,'$.modelID'),json_extract(data,'$.model.modelID'),json_extract(data,'$.model.id'),'unknown') AS name, COALESCE(SUM(CAST(json_extract(data,'$.tokens.output') AS INTEGER)),0) AS o, COALESCE(SUM(CAST(json_extract(data,'$.time.completed') AS INTEGER)-CAST(json_extract(data,'$.time.created') AS INTEGER)),0) AS ms FROM ${T.message} WHERE CAST(json_extract(data,'$.tokens.output') AS INTEGER) > 0 AND CAST(json_extract(data,'$.time.completed') AS INTEGER) > CAST(json_extract(data,'$.time.created') AS INTEGER) GROUP BY name`).all();
     const row = rows.find((x) => x.name === eTop[0]);

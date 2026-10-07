@@ -301,14 +301,41 @@ function marketOf(tok, provider, model) {
 // proportional to that session's per-day message-token volume
 // (uniform across spanned days when the session has no messages).
 // Returns perDay/perModel/perAgent/perSession maps plus totals.
-function attributeUsage(startMs, endMs) {
+// periodStartMs (optional): when set, ALSO slice every total into
+// *-Period buckets covering only local days >= periodStartMs. The all-time
+// buckets (perDay/perModel/perSession) are unaffected, so one scan serves both
+// the trend (lifetime) and the report (period) views. Period buckets group
+// message tokens by the MESSAGE's own model/agent, and spread session residual
+// by the session's model/agent — so per-model report rows sum exactly to the
+// period totals (self-consistent by construction).
+function attributeUsage(startMs, endMs, periodStartMs) {
+  const periodOn = periodStartMs != null;
+  const inPeriod = periodOn ? (key) => dateOfKey(key).getTime() >= periodStartMs : () => false;
   const perDay = {};
   const perModel = {};
   const perAgent = {};
   const perSession = {};
+  const perModelPeriod = {};
+  const perAgentPeriod = {};
+  const perAgentModelPeriod = {};
+  const perSessionPeriod = {};
+  const perSessionModelPeriod = {};
   const ensureDay = (key) => perDay[key] || (perDay[key] = { date: dateOfKey(key), sessions: new Set(), messages: 0, input: 0, output: 0, reasoning: 0, cacheRead: 0, cacheWrite: 0, cost: 0 });
   const ensureModel = (n) => perModel[n] || (perModel[n] = { messages: 0, sessions: new Set(), input: 0, output: 0, reasoning: 0, cacheRead: 0, cacheWrite: 0, cost: 0, speedOut: 0, speedMs: 0 });
   const ensureAgent = (a) => perAgent[a || 'unknown'] || (perAgent[a || 'unknown'] = { messages: 0, sessions: new Set(), input: 0, output: 0, reasoning: 0, cacheRead: 0, cacheWrite: 0, cost: 0 });
+  const tok = () => ({ input: 0, output: 0, reasoning: 0, cacheRead: 0, cacheWrite: 0, cost: 0 });
+  const ensureModelP = (n) => perModelPeriod[n] || (perModelPeriod[n] = { messages: 0, sessions: new Set(), input: 0, output: 0, reasoning: 0, cacheRead: 0, cacheWrite: 0, cost: 0, speedOut: 0, speedMs: 0 });
+  const ensureAgentP = (a) => perAgentPeriod[a || 'unknown'] || (perAgentPeriod[a || 'unknown'] = { sessions: new Set(), input: 0, output: 0, reasoning: 0, cacheRead: 0, cacheWrite: 0, cost: 0, speedOut: 0, speedMs: 0 });
+  const ensureAgentModelP = (a, m) => {
+    const k = a || 'unknown';
+    const bag = perAgentModelPeriod[k] || (perAgentModelPeriod[k] = {});
+    return bag[m] || (bag[m] = tok());
+  };
+  const ensureSessP = (sid) => perSessionPeriod[sid] || (perSessionPeriod[sid] = tok());
+  const ensureSessModelP = (sid, m) => {
+    const bag = perSessionModelPeriod[sid] || (perSessionModelPeriod[sid] = {});
+    return bag[m] || (bag[m] = tok());
+  };
 
   // 1. messages in period (exact timing)
   const msgTok = {};
@@ -341,6 +368,28 @@ function attributeUsage(startMs, endMs) {
       const vol = iv + ov + rv + crv + cwv;
       w.total += vol;
       w.perDay[key] = (w.perDay[key] || 0) + vol;
+    }
+    // Period slice: message tokens under the MESSAGE's own model/agent.
+    if (periodOn && inPeriod(key)) {
+      const mName = modelNameOf(r.provider, r.model);
+      const aName = r.agent || 'unknown';
+      const MP = ensureModelP(mName);
+      MP.messages++;
+      if (r.sid) MP.sessions.add(r.sid);
+      MP.input += iv; MP.output += ov; MP.reasoning += rv; MP.cacheRead += crv; MP.cacheWrite += cwv; MP.cost += cv;
+      if (ov > 0 && t1 > t0) { MP.speedOut += ov; MP.speedMs += (t1 - t0); }
+      const AP = ensureAgentP(aName);
+      if (r.sid) AP.sessions.add(r.sid);
+      AP.input += iv; AP.output += ov; AP.reasoning += rv; AP.cacheRead += crv; AP.cacheWrite += cwv; AP.cost += cv;
+      if (ov > 0 && t1 > t0) { AP.speedOut += ov; AP.speedMs += (t1 - t0); }
+      const AM = ensureAgentModelP(aName, mName);
+      AM.input += iv; AM.output += ov; AM.reasoning += rv; AM.cacheRead += crv; AM.cacheWrite += cwv; AM.cost += cv;
+      if (r.sid) {
+        const SP = ensureSessP(r.sid);
+        SP.input += iv; SP.output += ov; SP.reasoning += rv; SP.cacheRead += crv; SP.cacheWrite += cwv; SP.cost += cv;
+        const SM = ensureSessModelP(r.sid, mName);
+        SM.input += iv; SM.output += ov; SM.reasoning += rv; SM.cacheRead += crv; SM.cacheWrite += cwv; SM.cost += cv;
+      }
     }
   }
 
@@ -387,6 +436,21 @@ function attributeUsage(startMs, endMs) {
       const A = ensureAgent(aName);
       A.input += di; A.output += dout; A.reasoning += dr; A.cacheRead += dcr; A.cacheWrite += dcw; A.cost += dc;
       ps.input += di; ps.output += dout; ps.reasoning += dr; ps.cacheRead += dcr; ps.cacheWrite += dcw; ps.cost += dc;
+      // Period slice: residual shares land under the SESSION's model/agent
+      // (no per-message model exists for residual), but only on days inside
+      // the period, so period rows sum exactly to the period totals.
+      if (periodOn && inPeriod(k)) {
+        const MP = ensureModelP(mName);
+        MP.input += di; MP.output += dout; MP.reasoning += dr; MP.cacheRead += dcr; MP.cacheWrite += dcw; MP.cost += dc;
+        const AP = ensureAgentP(aName);
+        AP.input += di; AP.output += dout; AP.reasoning += dr; AP.cacheRead += dcr; AP.cacheWrite += dcw; AP.cost += dc;
+        const AM = ensureAgentModelP(aName, mName);
+        AM.input += di; AM.output += dout; AM.reasoning += dr; AM.cacheRead += dcr; AM.cacheWrite += dcw; AM.cost += dc;
+        const SP = ensureSessP(s.id);
+        SP.input += di; SP.output += dout; SP.reasoning += dr; SP.cacheRead += dcr; SP.cacheWrite += dcw; SP.cost += dc;
+        const SM = ensureSessModelP(s.id, mName);
+        SM.input += di; SM.output += dout; SM.reasoning += dr; SM.cacheRead += dcr; SM.cacheWrite += dcw; SM.cost += dc;
+      }
     }
   }
 
@@ -397,7 +461,11 @@ function attributeUsage(startMs, endMs) {
     totals.input += D.input; totals.output += D.output; totals.reasoning += D.reasoning;
     totals.cacheRead += D.cacheRead; totals.cacheWrite += D.cacheWrite; totals.cost += D.cost;
   }
-  return { perDay, perModel, perAgent, perSession, totals };
+  return {
+    perDay, perModel, perAgent, perSession, totals,
+    perModelPeriod, perAgentPeriod, perAgentModelPeriod, perSessionPeriod, perSessionModelPeriod,
+    periodStartMs,
+  };
 }
 
 // All-time attribution, memoized 300s (expensive full DB scan; avoids
@@ -409,8 +477,26 @@ let toolsCache = null;
 function getAttrAll() {
   const now = Date.now();
   if (attrAllCache && now - attrAllCache.at < 300000) return attrAllCache.a;
-  const a = attributeUsage(0, now);
+  // periodStartMs = 0: the *Period buckets equal the all-time ones, so the
+  // All report can read them (single scan serves both views).
+  const a = attributeUsage(0, now, 0);
   attrAllCache = { at: now, a };
+  return a;
+}
+
+// Period-scoped attribution (same 300s TTL, one cache slot per period start).
+// Report panels slice this instead of the all-time buckets so every row and
+// the summary total describe the SAME period.
+const attrPeriodCache = new Map();
+function getAttrPeriod(startMs) {
+  const now = Date.now();
+  const hit = attrPeriodCache.get(startMs);
+  if (hit && now - hit.at < 300000) return hit.a;
+  const a = attributeUsage(0, now, startMs);
+  attrPeriodCache.set(startMs, { at: now, a });
+  if (attrPeriodCache.size > 6) {
+    for (const [k, v] of attrPeriodCache) if (now - v.at >= 300000) attrPeriodCache.delete(k);
+  }
   return a;
 }
 
@@ -431,11 +517,7 @@ function getStatsFromDb(days) {
   // NOTE: days is only ever 0 here (overview totals); per-period stats are
   // built by buildReportFromDb via attributeUsage. Local-day count so the
   // number matches the trend chart buckets.
-  const overview = dbGet(`SELECT COUNT(*) AS sessions, COUNT(DISTINCT date(s.time_updated / 1000, 'unixepoch', 'localtime')) AS days FROM ${schema.session} s ${timeFilterWhere};`);
-  const msgConds = [];
-  if (startMs) msgConds.push('m.time_updated >= ' + startMs);
-  const msgCount = dbGet(`SELECT COUNT(*) AS messages FROM ${schema.message} m ${msgConds.length ? 'WHERE ' + msgConds.join(' AND ') : ''};`);
-  const costRow = dbGet(`SELECT COALESCE(SUM(tokens_input),0) AS input, COALESCE(SUM(tokens_output),0) AS output, COALESCE(SUM(tokens_reasoning),0) AS reasoning, COALESCE(SUM(tokens_cache_read),0) AS cacheRead, COALESCE(SUM(tokens_cache_write),0) AS cacheWrite, COALESCE(SUM(cost),0) AS total FROM ${schema.session} s ${timeFilterWhere};`);
+  
 
   // V2: tool parts are embedded in session_message content (part table froze
   // at the upgrade and its migrated rows were rebuilt into content, so
@@ -460,24 +542,37 @@ function getStatsFromDb(days) {
     .map(([name, count]) => ({ name, count, pct: Math.round((count / totalToolUse) * 1000) / 10 }))
     .sort((a, b) => b.count - a.count);
 
-  const tokenRows = dbQuery(`SELECT tokens_input + tokens_output + tokens_reasoning AS tokens FROM ${schema.session} s ${timeFilterWhere};`) || [];
-  const tokenVals = tokenRows.map((r) => r.tokens).filter(Number.isFinite);
-  const avgTokens = tokenVals.length ? tokenVals.reduce((s, v) => s + v, 0) / tokenVals.length : 0;
-  const medianTokens = computeMedian(tokenVals);
-  const activeDays = overview ? (overview.days || 1) : 1;
-  const sessions = overview ? (overview.sessions || 0) : 0;
-  const avgDayCost = costRow && costRow.total ? costRow.total / activeDays : 0;
+  const attr = getAttrAll();
+  const T = attr.totals;
+  // Overview = ALL TIME and uses the SAME attribution as the trend chart and
+  // Report(All), so the three panels cannot disagree. Per-message tokens are
+  // authoritative: a session whose message sums exceed its session-table
+  // counters (V2 migration artifact) keeps the measured message values
+  // instead of being clamped down to the session counters.
+  const sessions = T.sessions;
+  const messages = T.messages;
+  // Active days = day buckets that actually carry usage. Excludes pre-2000
+  // epoch artifacts (imported rows with time_created = 0).
+  const dayKeys = Object.keys(attr.perDay).filter((k) => attr.perDay[k].date.getFullYear() >= 2020);
+  const activeDays = dayKeys.length || 1;
+  const sessVals = Object.values(attr.perSession)
+    .filter((s) => s.input > 0 || s.output > 0 || s.reasoning > 0)
+    .map((s) => s.input + s.output + s.reasoning)
+    .filter(Number.isFinite);
+  const avgTokens = sessVals.length ? sessVals.reduce((s, v) => s + v, 0) / sessVals.length : 0;
+  const medianTokens = computeMedian(sessVals);
+  const avgDayCost = T.cost ? T.cost / activeDays : 0;
 
   // Per-model usage from hybrid attribution (message counts are TRUE message
   // counts here, not session counts; token/cost sums include residuals so
   // pruned history isn't lost).
-  const attr = getAttrAll();
   const models = Object.entries(attr.perModel)
     .map(([name, m]) => ({
       name,
       messages: m.messages,
       input: Math.round(m.input),
       output: Math.round(m.output),
+      reasoning: Math.round(m.reasoning),
       cacheRead: Math.round(m.cacheRead),
       cacheWrite: Math.round(m.cacheWrite),
       cost: m.cost,
@@ -485,46 +580,41 @@ function getStatsFromDb(days) {
     }))
     .sort((a, b) => b.cost - a.cost);
 
-  // Savings estimate: market value of all-time usage at catalog paid rates.
-  // Basis is session-meta grouping (same rows/basis as the report providers
-  // table) so the two panels agree; message-level model splits would price
-  // model-switched sessions differently.
+  // Savings estimate: market value of all-time usage at catalog paid rates,
+  // priced per MESSAGE model (residual falls back to the session's model) —
+  // the same basis as the report providers table.
   let marketTotal = null, savedTotal = null, priceAsOf = null;
   {
     const info = pricing.catalogInfo();
     if (info.ok) {
       priceAsOf = new Date(info.mtimeMs).toISOString();
       marketTotal = 0;
-      const grows = dbQuery(`SELECT COALESCE(json_extract(model,'$.providerID'),'unknown') AS provider, COALESCE(json_extract(model,'$.id'),'unknown') AS model, SUM(tokens_input) AS i, SUM(tokens_output) AS o, SUM(tokens_reasoning) AS r, SUM(tokens_cache_read) AS cr FROM ${schema.session} GROUP BY provider, model`) || [];
-      for (const g of grows) {
-        const mk = marketOf({ input: g.i, output: g.o, reasoning: g.r, cacheRead: g.cr, cost: 0 }, g.provider, g.model);
+      for (const [name, m] of Object.entries(attr.perModel)) {
+        const { provider, model } = splitModelName(name);
+        const mk = marketOf({ input: m.input, output: m.output, reasoning: m.reasoning, cacheRead: m.cacheRead, cost: m.cost }, provider, model);
         if (mk.market === null) { marketTotal = null; break; }
         marketTotal += mk.market;
       }
       if (marketTotal !== null) {
         marketTotal = Math.round(marketTotal * 10000) / 10000;
-        savedTotal = Math.round((marketTotal - (costRow ? costRow.total : 0)) * 10000) / 10000;
+        savedTotal = Math.round((marketTotal - T.cost) * 10000) / 10000;
       } else { savedTotal = null; }
     }
   }
 
   return {
     ok: true,
-    overview: {
-      sessions: sessions,
-      messages: msgCount ? (msgCount.messages || 0) : 0,
-      days: activeDays,
-    },
+    overview: { sessions, messages, days: activeDays },
     cost: {
-      total: costRow ? costRow.total : 0,
+      total: T.cost,
       avgDay: avgDayCost,
       avgTokensSession: Math.round(avgTokens),
       medianTokensSession: Math.round(medianTokens),
-      input: costRow ? costRow.input : 0,
-      output: costRow ? costRow.output : 0,
-      reasoning: costRow ? costRow.reasoning : 0,
-      cacheRead: costRow ? costRow.cacheRead : 0,
-      cacheWrite: costRow ? costRow.cacheWrite : 0,
+      input: Math.round(T.input),
+      output: Math.round(T.output),
+      reasoning: Math.round(T.reasoning),
+      cacheRead: Math.round(T.cacheRead),
+      cacheWrite: Math.round(T.cacheWrite),
       marketTotal, savedTotal, priceAsOf,
     },
     tools,
@@ -660,18 +750,32 @@ function buildReportFromDb(days) {
   const startMs = periodStartMs(days, now);
   const label = days === -1 ? 'All' : days <= 1 ? 'Daily' : days <= 7 ? 'Weekly' : 'Monthly';
 
-  // Use ALL-TIME attribution so every session is seen by the same
-  // attributeUsage call. Then sum only the perDay entries within the
-  // requested period. This keeps per-day breakdown consistent with the
-  // trend chart (which also uses the same full attribution).
-  const a = getAttrAll();
-  const aNow = attrAllCache.at; // attribution snapshot time: scope message-level stats to it
+  // Period-scoped attribution: every number below (summary, providers, agents,
+  // sessions, market/saved) is sliced to THIS period, so the tables sum to the
+  // card. The all-time buckets (perDay) are still used for the summary totals
+  // and stay identical to the trend chart for the same period.
+  const a = days === -1 ? getAttrAll() : getAttrPeriod(startMs);
+  const aNow = days === -1 ? attrAllCache.at : attrPeriodCache.get(startMs).at; // snapshot time of `a`
   // Message-level stats per session within the period (period speed + active
   // time). One GROUP BY over the merged message view, mapped onto the same
   // session-meta buckets as tokens so row sets stay identical.
+  // Wall time must come from the MESSAGE clock, not session.time_updated:
+  // subagent/fork sessions are written with time_updated == time_created
+  // (same millisecond), which would report ~0 wall for hours of real work.
+  // Query the merged message view for the period span per session.
+  const wallMs = {};
+  for (const m of (dbQuery(`SELECT session_id AS sid, MIN(time_created) AS t0, MAX(COALESCE(CAST(json_extract(data,'$.time.completed') AS INTEGER), time_updated)) AS t1 FROM ${schema.message} WHERE time_created >= ${startMs} AND time_created < ${aNow} GROUP BY session_id`) || [])) {
+    wallMs[m.sid] = Math.max(0, (+m.t1 || 0) - (+m.t0 || 0));
+  }
   const msgAgg = {};
   for (const m of (dbQuery(`SELECT session_id AS sid, COUNT(*) AS n, COALESCE(SUM(CASE WHEN CAST(json_extract(data, '$.tokens.output') AS INTEGER) > 0 AND CAST(json_extract(data, '$.time.completed') AS INTEGER) > CAST(json_extract(data, '$.time.created') AS INTEGER) THEN CAST(json_extract(data, '$.tokens.output') AS INTEGER) ELSE 0 END), 0) AS o, COALESCE(SUM(CASE WHEN CAST(json_extract(data,'$.tokens.output') AS INTEGER) > 0 AND CAST(json_extract(data,'$.time.completed') AS INTEGER) > CAST(json_extract(data,'$.time.created') AS INTEGER) THEN CAST(json_extract(data,'$.tokens.reasoning') AS INTEGER) ELSE 0 END), 0) AS rq, COALESCE(SUM(CASE WHEN CAST(json_extract(data, '$.tokens.output') AS INTEGER) > 0 AND CAST(json_extract(data, '$.time.completed') AS INTEGER) > CAST(json_extract(data, '$.time.created') AS INTEGER) THEN CAST(json_extract(data, '$.time.completed') AS INTEGER) - CAST(json_extract(data, '$.time.created') AS INTEGER) ELSE 0 END), 0) AS ms FROM ${schema.message} WHERE time_created >= ${startMs} AND time_created < ${aNow} GROUP BY sid`) || [])) {
     msgAgg[m.sid] = m;
+  }
+  // Same aggregates per agent — the message layer can name agents that session
+  // meta lacks (compaction/plan), so agent speed/active come from messages.
+  const msgAgentAgg = {};
+  for (const m of (dbQuery(`SELECT COALESCE(json_extract(data,'$.agent'),'unknown') AS agent, COALESCE(SUM(CASE WHEN CAST(json_extract(data,'$.tokens.output') AS INTEGER) > 0 AND CAST(json_extract(data,'$.time.completed') AS INTEGER) > CAST(json_extract(data,'$.time.created') AS INTEGER) THEN CAST(json_extract(data,'$.tokens.output') AS INTEGER) ELSE 0 END),0) AS o, COALESCE(SUM(CASE WHEN CAST(json_extract(data,'$.tokens.output') AS INTEGER) > 0 AND CAST(json_extract(data,'$.time.completed') AS INTEGER) > CAST(json_extract(data,'$.time.created') AS INTEGER) THEN CAST(json_extract(data,'$.time.completed') AS INTEGER) - CAST(json_extract(data,'$.time.created') AS INTEGER) ELSE 0 END),0) AS ms FROM ${schema.message} WHERE time_created >= ${startMs} AND time_created < ${aNow} GROUP BY COALESCE(json_extract(data,'$.agent'),'unknown')`) || [])) {
+    msgAgentAgg[m.agent] = { o: m.o, ms: m.ms };
   }
   const periodDays = {};
   for (const [key, val] of Object.entries(a.perDay)) {
@@ -689,12 +793,11 @@ function buildReportFromDb(days) {
   }
   const t = periodTotals;
   const activeDays = pdVals.length || 1;
-  // Avg/median over the PERIOD's token-bearing sessions (same session set
-  // the providers/agents tables are built from) — not all-time, so Daily and
-  // Weekly reports differ.
+  // Avg/median over the PERIOD's token-bearing sessions — period buckets, so
+  // Daily/Weekly differ and the value matches the card and the tables.
   const periodSessionIds = [...periodTotals.sessions];
   const sessVals = periodSessionIds
-    .map((sid) => a.perSession[sid])
+    .map((sid) => (a.perSessionPeriod || a.perSession)[sid])
     .filter((s) => s && (s.input > 0 || s.output > 0 || s.reasoning > 0))
     .map((s) => s.input + s.output + s.reasoning)
     .filter(Number.isFinite);
@@ -723,50 +826,23 @@ function buildReportFromDb(days) {
     const metaMap = {};
     for (const s of sessMeta) metaMap[s.id] = s;
 
-    const agentAgg = {};
-    const modelAgg = {};
     const sessRows = [];
     for (const sid of periodSessionIds) {
-      const ps = a.perSession[sid];
-      if (!ps) continue;
-      const meta = metaMap[sid] || { agent: 'unknown', provider: 'unknown', model: 'unknown' };
-      const agent = meta.agent || 'unknown';
-      const modelName = `${meta.provider}/${meta.model}`;
-      if (!agentAgg[agent]) agentAgg[agent] = { sessions: new Set(), cost: 0, input: 0, output: 0, reasoning: 0, cacheRead: 0, speedOut: 0, speedMs: 0, wallMs: 0, activeMs: 0, market: 0, saved: 0 };
-      agentAgg[agent].sessions.add(sid);
-      agentAgg[agent].input += ps.input; agentAgg[agent].output += ps.output;
-      agentAgg[agent].reasoning += ps.reasoning; agentAgg[agent].cacheRead += ps.cacheRead;
-      agentAgg[agent].cost += ps.cost;
+      const meta = metaMap[sid] || { agent: 'unknown', provider: 'unknown', model: 'unknown', tc: 0, tu: 0 };
       const mg = msgAgg[sid] || { n: 0, o: 0, ms: 0, rq: 0 };
-      agentAgg[agent].speedOut += mg.o; agentAgg[agent].speedMs += mg.ms; agentAgg[agent].activeMs += mg.ms;
-      agentAgg[agent].wallMs += Math.max(0, (meta.tu || 0) - (meta.tc || 0));
-      const mkA = marketOf({ input: ps.input, output: ps.output, reasoning: ps.reasoning, cacheRead: ps.cacheRead, cost: ps.cost }, meta.provider || 'unknown', meta.model || 'unknown');
-      if (mkA.market !== null) { agentAgg[agent].market += mkA.market; agentAgg[agent].saved += mkA.saved; }
-      if (!modelAgg[modelName]) modelAgg[modelName] = { sessions: new Set(), cost: 0, input: 0, output: 0, reasoning: 0, cacheRead: 0, speedOut: 0, speedMs: 0 };
-      modelAgg[modelName].sessions.add(sid);
-      modelAgg[modelName].input += ps.input; modelAgg[modelName].output += ps.output;
-      modelAgg[modelName].reasoning += ps.reasoning; modelAgg[modelName].cacheRead += ps.cacheRead;
-      modelAgg[modelName].cost += ps.cost;
-      modelAgg[modelName].speedOut += mg.o; modelAgg[modelName].speedMs += mg.ms;
-      sessRows.push({ sid, meta, ps, mg });
+      const sm = (a.perSessionModelPeriod && a.perSessionModelPeriod[sid]) || null;
+      sessRows.push({ sid, meta, ps: a.perSessionPeriod ? a.perSessionPeriod[sid] : a.perSession[sid], mg, sm });
     }
 
-    var pAgentRows = Object.entries(agentAgg)
-      .map(([agent, m]) => ({
-        agent, sessions: m.sessions.size, cost: r4(m.cost),
-        tok_in: Math.round(m.input), tok_out: Math.round(m.output),
-        tok_reasoning: Math.round(m.reasoning), cache_read: Math.round(m.cacheRead),
-        speed: m.speedMs > 0 ? Math.round((m.speedOut / (m.speedMs / 1000)) * 10) / 10 : null,
-        wallMs: Math.round(m.wallMs), activeMs: Math.round(m.activeMs),
-        market: Math.round(m.market * 10000) / 10000, saved: Math.round(m.saved * 10000) / 10000,
-      }))
-      .sort((x, y) => y.cost - x.cost);
-    var pProviderRows = Object.entries(modelAgg)
+    // Providers/agents come straight from the period buckets (message tokens
+    // under the message's own model; residual under the session's), so their
+    // columns sum EXACTLY to the summary card by construction.
+    var pProviderRows = Object.entries(a.perModelPeriod)
       .map(([name, m]) => {
         const { provider, model } = splitModelName(name);
         const mk = marketOf({ input: m.input, output: m.output, reasoning: m.reasoning, cacheRead: m.cacheRead, cost: m.cost }, provider, model);
         return {
-          provider, model, sessions: m.sessions.size, cost: r4(m.cost),
+          provider, model, sessions: m.sessions.size, messages: m.messages, cost: r4(m.cost),
           tok_in: Math.round(m.input), tok_out: Math.round(m.output),
           tok_reasoning: Math.round(m.reasoning), cache_read: Math.round(m.cacheRead),
           speed: m.speedMs > 0 ? Math.round((m.speedOut / (m.speedMs / 1000)) * 10) / 10 : null,
@@ -774,22 +850,65 @@ function buildReportFromDb(days) {
         };
       })
       .sort((x, y) => y.cost - x.cost);
-    var pSessionRows = sessRows
-      .map(({ sid, meta, ps, mg }) => {
-        const mkS = marketOf({ input: ps.input, output: ps.output, reasoning: mg.rq || 0, cacheRead: ps.cacheRead, cost: ps.cost }, meta.provider || 'unknown', meta.model || 'unknown');
+
+    var pAgentRows = Object.entries(a.perAgentPeriod)
+      .map(([agent, m]) => {
+        let market = 0, saved = 0, priced = false;
+        const bag = (a.perAgentModelPeriod && a.perAgentModelPeriod[agent]) || {};
+        for (const [name, b] of Object.entries(bag)) {
+          const { provider, model } = splitModelName(name);
+          const mk = marketOf({ input: b.input, output: b.output, reasoning: b.reasoning, cacheRead: b.cacheRead, cost: b.cost }, provider, model);
+          if (mk.market === null) { market = null; break; }
+          market += mk.market; saved += mk.saved; priced = true;
+        }
+        // Wall = period span measured on the message clock (see wallMs above).
+        let agentWall = 0;
+        for (const sid of m.sessions) agentWall += wallMs[sid] || 0;
         return {
-        id: sid, title: (meta.title || '').slice(0, 40), agent: meta.agent || 'unknown',
-        provider: meta.provider || 'unknown', model: meta.model || 'unknown',
-        wallMs: Math.max(0, (meta.tu || 0) - (meta.tc || 0)),
-        activeMs: mg.ms || 0, messages: mg.n || 0,
-        tok_in: Math.round(ps.input), tok_out: Math.round(ps.output),
-        tok_reasoning: Math.round(mg.rq || 0),
-        cost: r4(ps.cost),
-        speed: (mg.ms || 0) > 0 ? Math.round(((mg.o || 0) / (mg.ms / 1000)) * 10) / 10 : null,
-        market: mkS.market, saved: mkS.saved, pricedAs: mkS.pricedAs,
+          agent, sessions: m.sessions.size, cost: r4(m.cost),
+          tok_in: Math.round(m.input), tok_out: Math.round(m.output),
+          tok_reasoning: Math.round(m.reasoning), cache_read: Math.round(m.cacheRead),
+          speed: msgAgentAgg[agent] && msgAgentAgg[agent].ms > 0 ? Math.round((msgAgentAgg[agent].o / (msgAgentAgg[agent].ms / 1000)) * 10) / 10 : null,
+          wallMs: Math.round(agentWall),
+          activeMs: msgAgentAgg[agent] ? Math.round(msgAgentAgg[agent].ms) : 0,
+          market: market === null ? null : Math.round(market * 10000) / 10000,
+          saved: market === null ? null : Math.round(saved * 10000) / 10000,
+          pricedAs: priced,
         };
       })
-      .sort((x, y) => y.wallMs - x.wallMs)
+      .sort((x, y) => y.cost - x.cost);
+    var pSessionRows = sessRows
+      .map(({ sid, meta, ps, mg, sm }) => {
+        // Price by the session's own period model mix when available
+        // (message tokens under the message's model), else the session's meta
+        // model (residual-only sessions).
+        let market = null, saved = null, pricedAs = null, prov = meta.provider || 'unknown', mod = meta.model || 'unknown';
+        const bag = sm || null;
+        if (bag && Object.keys(bag).length) {
+          const name = Object.keys(bag).sort((a, b) => {
+            const va = bag[a].input + bag[a].output + bag[a].cacheRead;
+            const vb = bag[b].input + bag[b].output + bag[b].cacheRead;
+            return vb - va;
+          })[0];
+          const sp = splitModelName(name);
+          prov = sp.provider; mod = sp.model;
+        }
+        const mkS = marketOf({ input: ps.input, output: ps.output, reasoning: mg.rq || 0, cacheRead: ps.cacheRead, cost: ps.cost }, prov, mod);
+        market = mkS.market; saved = mkS.saved; pricedAs = mkS.pricedAs;
+        // Wall from the message clock (see wallMs above).
+        return {
+          id: sid, title: (meta.title || '').slice(0, 40), agent: meta.agent || 'unknown',
+          provider: prov, model: mod,
+          wallMs: wallMs[sid] || 0,
+          activeMs: mg.ms || 0, messages: mg.n || 0,
+          tok_in: Math.round(ps.input), tok_out: Math.round(ps.output),
+          tok_reasoning: Math.round(mg.rq || 0),
+          cost: r4(ps.cost),
+          speed: (mg.ms || 0) > 0 ? Math.round(((mg.o || 0) / (mg.ms / 1000)) * 10) / 10 : null,
+          market, saved, pricedAs,
+        };
+      })
+      .sort((x, y) => y.activeMs - x.activeMs)
       .slice(0, 20);
   } else {
     var pAgentRows = [];
@@ -797,9 +916,12 @@ function buildReportFromDb(days) {
     var pSessionRows = [];
   }
 
+  // Period market = Σ provider rows (already period-scoped); saved = Σ provider
+  // saved so it can never mix a period cost with a lifetime market.
   const sumMkt = (rows) => rows.reduce((s, r) => s + (r.market || 0), 0);
+  const sumSaved = (rows) => rows.reduce((s, r) => s + (r.saved || 0), 0);
   statsR.cost.marketTotal = Math.round(sumMkt(pProviderRows) * 10000) / 10000;
-  statsR.cost.savedTotal = Math.round((sumMkt(pProviderRows) - t.cost) * 10000) / 10000;
+  statsR.cost.savedTotal = Math.round(sumSaved(pProviderRows) * 10000) / 10000;
   statsR.cost.savedPct = statsR.cost.marketTotal > 0 ? Math.round((statsR.cost.savedTotal / statsR.cost.marketTotal) * 1000) / 10 : null;
   statsR.cost.priceAsOf = pricing.catalogInfo().ok ? new Date(pricing.catalogInfo().mtimeMs).toISOString() : null;
 

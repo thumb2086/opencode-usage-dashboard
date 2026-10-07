@@ -75,13 +75,50 @@ function detectTables(db) {
   };
 }
 
-// Independent hybrid attribution. Returns {perDay, perModel, perAgent, perSession, totals}.
+// Independent hybrid attribution. Returns {perDay, perModel, perAgent, perSession, totals}
+// plus, when periodStartMs is passed, period slices:
+//   perModelPeriod, perAgentPeriod, perAgentModelPeriod, perSessionPeriod,
+//   perSessionModelPeriod ??same basis as server.js (message tokens under the
+//   message's model/agent; residual under the session's).
 // perDay key: 'YYYY-MM-DD'; sessions are Sets.
-function computeHybrid(db, startMs, endMs) {
+function computeHybrid(db, startMs, endMs, periodStartMs) {
   const T = detectTables(db);
+  const periodOn = periodStartMs != null;
+  const keyToMs = (k) => { const [y, m, d] = k.split('-').map(Number); return new Date(y, m - 1, d).getTime(); };
+  const inPeriod = periodOn ? (k) => keyToMs(k) >= periodStartMs : () => false;
   const perDay = {}, perModel = {}, perAgent = {}, perSession = {};
+  const perModelPeriod = {}, perAgentPeriod = {}, perAgentModelPeriod = {};
+  const perSessionPeriod = {}, perSessionModelPeriod = {};
   const ens = (o, k, init) => o[k] || (o[k] = init());
   const newBucket = () => ({ sessions: new Set(), messages: 0, input: 0, output: 0, reasoning: 0, cacheRead: 0, cacheWrite: 0, cost: 0 });
+  const newDayBucket = (key) => {
+    const [y, m, d] = key.split('-').map(Number);
+    return { date: new Date(y, m - 1, d), sessions: new Set(), messages: 0, input: 0, output: 0, reasoning: 0, cacheRead: 0, cacheWrite: 0, cost: 0 };
+  };
+  const newTok = () => ({ input: 0, output: 0, reasoning: 0, cacheRead: 0, cacheWrite: 0, cost: 0 });
+  const ensureModelP = (n) => ens(perModelPeriod, n, newBucket);
+  const ensureAgentP = (a) => ens(perAgentPeriod, a || 'unknown', () => ({ sessions: new Set(), input: 0, output: 0, reasoning: 0, cacheRead: 0, cacheWrite: 0, cost: 0, speedOut: 0, speedMs: 0 }));
+  const ensureAgentModelP = (a, m) => {
+    const bag = ens(perAgentModelPeriod, a || 'unknown', () => ({}));
+    return ens(bag, m, newTok);
+  };
+  const ensureSessP = (sid) => ens(perSessionPeriod, sid, newTok);
+  const ensureSessModelP = (sid, m) => {
+    const bag = ens(perSessionModelPeriod, sid, () => ({}));
+    return ens(bag, m, newTok);
+  };
+  const addTok = (T2, s) => { T2.input += s.input; T2.output += s.output; T2.reasoning += s.reasoning; T2.cacheRead += s.cacheRead; T2.cacheWrite += s.cacheWrite; T2.cost += s.cost; };
+
+  // Per (session, agent) output/duration for speed + activeMs. Aggregated by
+  // time_created in [startMs, endMs) so the period slice is exact.
+  const dbMs = new Map(), dbOut = new Map();
+  for (const row of db.prepare(`SELECT session_id AS sid, COALESCE(json_extract(data,'$.agent'),'unknown') AS agent,
+    COALESCE(SUM(CASE WHEN CAST(json_extract(data,'$.tokens.output') AS INTEGER) > 0 AND CAST(json_extract(data,'$.time.completed') AS INTEGER) > CAST(json_extract(data,'$.time.created') AS INTEGER) THEN CAST(json_extract(data,'$.tokens.output') AS INTEGER) ELSE 0 END),0) AS o,
+    COALESCE(SUM(CASE WHEN CAST(json_extract(data,'$.tokens.output') AS INTEGER) > 0 AND CAST(json_extract(data,'$.time.completed') AS INTEGER) > CAST(json_extract(data,'$.time.created') AS INTEGER) THEN CAST(json_extract(data,'$.time.completed') AS INTEGER) - CAST(json_extract(data,'$.time.created') AS INTEGER) ELSE 0 END),0) AS ms
+    FROM ${T.message} WHERE time_created >= ? AND time_created < ? GROUP BY sid, agent`).all(startMs, endMs)) {
+    dbMs.set(`${row.sid}|${row.agent}`, row.ms);
+    dbOut.set(`${row.sid}|${row.agent}`, row.o);
+  }
 
   const mrows = db.prepare(`SELECT date(time_created/1000,'unixepoch','localtime') AS day,
     session_id AS sid,
@@ -99,7 +136,7 @@ function computeHybrid(db, startMs, endMs) {
 
   const sessMsg = {}; // sid -> {tot per field, perDay {day: vol}}
   for (const r of mrows) {
-    const D = ens(perDay, r.day, newBucket);
+    const D = ens(perDay, r.day, () => newDayBucket(r.day));
     D.messages += r.n;
     if (r.sid) D.sessions.add(r.sid);
     D.input += r.input; D.output += r.output; D.reasoning += r.reasoning;
@@ -121,6 +158,30 @@ function computeHybrid(db, startMs, endMs) {
       e.cacheRead += r.cacheRead; e.cacheWrite += r.cacheWrite; e.cost += r.cost;
       const vol = r.input + r.output + r.reasoning + r.cacheRead + r.cacheWrite;
       e.perDay[r.day] = (e.perDay[r.day] || 0) + vol;
+    }
+    if (periodOn && inPeriod(r.day)) {
+      const mn2 = `${r.provider || 'unknown'}/${r.model || 'unknown'}`;
+      const an2 = r.agent || 'unknown';
+      const row = { input: r.input, output: r.output, reasoning: r.reasoning, cacheRead: r.cacheRead, cacheWrite: r.cacheWrite, cost: r.cost };
+      const MP = ensureModelP(mn2);
+      MP.messages += r.n;
+      if (r.sid) MP.sessions.add(r.sid);
+      addTok(MP, row);
+      const AP = ensureAgentP(an2);
+      if (r.sid) AP.sessions.add(r.sid);
+      addTok(AP, row);
+      // message-level duration for speed/activeMs (query joins per day, so
+      // sum completed-created across the period's messages of this agent)
+      if (r.sid) {
+        const dur = dbMs.get(`${r.sid}|${an2}`) || 0;
+        const out = dbOut.get(`${r.sid}|${an2}`) || 0;
+        AP.speedOut += out; AP.speedMs += dur;
+      }
+      addTok(ensureAgentModelP(an2, mn2), row);
+      if (r.sid) {
+        addTok(ensureSessP(r.sid), row);
+        addTok(ensureSessModelP(r.sid, mn2), row);
+      }
     }
   }
 
@@ -153,17 +214,17 @@ function computeHybrid(db, startMs, endMs) {
     for (const k of span) wTotal += mt.perDay[k] || 0;
     const ps = ens(perSession, s.id, () => ({ input: mt.input, output: mt.output, reasoning: mt.reasoning, cacheRead: mt.cacheRead, cacheWrite: mt.cacheWrite, cost: mt.cost }));
     if (wTotal > 0) {
-      for (const k of span) if ((mt.perDay[k] || 0) > 0) ens(perDay, k, newBucket).sessions.add(s.id);
+      for (const k of span) if ((mt.perDay[k] || 0) > 0) ens(perDay, k, () => newDayBucket(k)).sessions.add(s.id);
     } else {
       const ud = new Date(Math.min(s.tu, endMs - 1));
-      ens(perDay, dayKeyOfLocal(ud), newBucket).sessions.add(s.id);
+      ens(perDay, dayKeyOfLocal(ud), () => newDayBucket(dayKeyOfLocal(ud))).sessions.add(s.id);
     }
     const mn = `${s.provider || 'unknown'}/${s.model || 'unknown'}`;
     const an = s.agent || 'unknown';
     for (const k of span) {
       const share = wTotal > 0 ? ((mt.perDay[k] || 0) / wTotal) : 1 / span.length;
       if (!share) continue;
-      const D = ens(perDay, k, newBucket);
+      const D = ens(perDay, k, () => newDayBucket(k));
       D.input += res.input * share; D.output += res.output * share; D.reasoning += res.reasoning * share;
       D.cacheRead += res.cacheRead * share; D.cacheWrite += res.cacheWrite * share; D.cost += res.cost * share;
       const M = ens(perModel, mn, newBucket);
@@ -174,6 +235,17 @@ function computeHybrid(db, startMs, endMs) {
       A.cacheRead += res.cacheRead * share; A.cacheWrite += res.cacheWrite * share; A.cost += res.cost * share;
       ps.input += res.input * share; ps.output += res.output * share; ps.reasoning += res.reasoning * share;
       ps.cacheRead += res.cacheRead * share; ps.cacheWrite += res.cacheWrite * share; ps.cost += res.cost * share;
+      if (periodOn && inPeriod(k)) {
+        const row = {
+          input: res.input * share, output: res.output * share, reasoning: res.reasoning * share,
+          cacheRead: res.cacheRead * share, cacheWrite: res.cacheWrite * share, cost: res.cost * share,
+        };
+        addTok(ensureModelP(mn), row);
+        addTok(ensureAgentP(an), row);
+        addTok(ensureAgentModelP(an, mn), row);
+        addTok(ensureSessP(s.id), row);
+        addTok(ensureSessModelP(s.id, mn), row);
+      }
     }
   }
 
@@ -184,7 +256,11 @@ function computeHybrid(db, startMs, endMs) {
     totals.input += D.input; totals.output += D.output; totals.reasoning += D.reasoning;
     totals.cacheRead += D.cacheRead; totals.cacheWrite += D.cacheWrite; totals.cost += D.cost;
   }
-  return { perDay, perModel, perAgent, perSession, totals };
+  return {
+    perDay, perModel, perAgent, perSession, totals,
+    perModelPeriod, perAgentPeriod, perAgentModelPeriod, perSessionPeriod, perSessionModelPeriod,
+    periodStartMs,
+  };
 }
 
 module.exports = { openDb, fetchJson, dayKeyOfLocal, computeHybrid, detectTables };
