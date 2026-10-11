@@ -279,15 +279,17 @@ function splitModelName(name) {
 }
 
 // Market estimate for token usage at catalog paid rates (USD). saved is
-// market minus actual cost. pricedAs records the catalog entry used
-// ("proxy:" prefix = fallback estimate). Null when no pricing catalog.
+// market minus actual cost. kind is 'exact' | 'sibling' | 'proxy' — how the
+// rate was found; null (kind 'unpriced') when the catalog has NO comparable
+// paid listing, in which case we report no money at all rather than inventing
+// a rate (that fake rate once turned a $0 model into $212 of phantom savings).
 // Market-price engine rules live in pricing.js (shared with check scripts).
 function marketOf(tok, provider, model) {
   const pr = pricing.priceFor(provider, model);
-  if (!pr) return { market: null, saved: null, pricedAs: null };
+  if (!pr) return { market: null, saved: null, pricedAs: null, priced: false, kind: 'unpriced' };
   const market = pricing.marketOf(tok, pr);
   const r4m = (v) => Math.round(v * 10000) / 10000;
-  return { market: r4m(market), saved: r4m(market - (tok.cost || 0)), pricedAs: pr.source };
+  return { market: r4m(market), saved: r4m(market - (tok.cost || 0)), pricedAs: pr.source, priced: true, kind: pr.kind };
 }
 
 // Hybrid usage attribution over [startMs, endMs).
@@ -582,8 +584,12 @@ function getStatsFromDb(days) {
 
   // Savings estimate: market value of all-time usage at catalog paid rates,
   // priced per MESSAGE model (residual falls back to the session's model) —
-  // the same basis as the report providers table.
+  // the same basis as the report providers table. Rows the catalog cannot
+  // price are EXCLUDED and disclosed (unpricedTokens/unpricedRows) instead of
+  // being valued at a made-up rate; proxyShare is how much of the priced
+  // total comes from cross-provider estimates.
   let marketTotal = null, savedTotal = null, priceAsOf = null;
+  let unpricedRows = 0, unpricedTokens = 0, proxyMarket = 0;
   {
     const info = pricing.catalogInfo();
     if (info.ok) {
@@ -591,14 +597,19 @@ function getStatsFromDb(days) {
       marketTotal = 0;
       for (const [name, m] of Object.entries(attr.perModel)) {
         const { provider, model } = splitModelName(name);
-        const mk = marketOf({ input: m.input, output: m.output, reasoning: m.reasoning, cacheRead: m.cacheRead, cost: m.cost }, provider, model);
-        if (mk.market === null) { marketTotal = null; break; }
+        const tok = { input: m.input, output: m.output, reasoning: m.reasoning, cacheRead: m.cacheRead, cost: m.cost };
+        const mk = marketOf(tok, provider, model);
+        if (!mk.priced) {
+          unpricedRows++;
+          unpricedTokens += tok.input + tok.output + tok.reasoning + tok.cacheRead;
+          continue;
+        }
         marketTotal += mk.market;
+        if (mk.kind === 'proxy') proxyMarket += mk.market;
       }
-      if (marketTotal !== null) {
-        marketTotal = Math.round(marketTotal * 10000) / 10000;
-        savedTotal = Math.round((marketTotal - T.cost) * 10000) / 10000;
-      } else { savedTotal = null; }
+      marketTotal = Math.round(marketTotal * 10000) / 10000;
+      savedTotal = Math.round((marketTotal - T.cost) * 10000) / 10000;
+      proxyMarket = Math.round(proxyMarket * 10000) / 10000;
     }
   }
 
@@ -616,6 +627,8 @@ function getStatsFromDb(days) {
       cacheRead: Math.round(T.cacheRead),
       cacheWrite: Math.round(T.cacheWrite),
       marketTotal, savedTotal, priceAsOf,
+      unpricedRows, unpricedTokens, proxyMarket,
+      proxyShare: marketTotal > 0 ? Math.round((proxyMarket / marketTotal) * 1000) / 10 : null,
     },
     tools,
     models,
@@ -846,20 +859,21 @@ function buildReportFromDb(days) {
           tok_in: Math.round(m.input), tok_out: Math.round(m.output),
           tok_reasoning: Math.round(m.reasoning), cache_read: Math.round(m.cacheRead),
           speed: m.speedMs > 0 ? Math.round((m.speedOut / (m.speedMs / 1000)) * 10) / 10 : null,
-          market: mk.market, saved: mk.saved, pricedAs: mk.pricedAs,
+          market: mk.market, saved: mk.saved, pricedAs: mk.pricedAs, priced: mk.priced, kind: mk.kind,
         };
       })
       .sort((x, y) => y.cost - x.cost);
 
     var pAgentRows = Object.entries(a.perAgentPeriod)
       .map(([agent, m]) => {
-        let market = 0, saved = 0, priced = false;
+        let market = 0, saved = 0, pricedAny = false, unpriced = 0, proxy = 0;
         const bag = (a.perAgentModelPeriod && a.perAgentModelPeriod[agent]) || {};
         for (const [name, b] of Object.entries(bag)) {
           const { provider, model } = splitModelName(name);
           const mk = marketOf({ input: b.input, output: b.output, reasoning: b.reasoning, cacheRead: b.cacheRead, cost: b.cost }, provider, model);
-          if (mk.market === null) { market = null; break; }
-          market += mk.market; saved += mk.saved; priced = true;
+          if (!mk.priced) { unpriced++; continue; }
+          market += mk.market; saved += mk.saved; pricedAny = true;
+          if (mk.kind === 'proxy') proxy += mk.market;
         }
         // Wall = period span measured on the message clock (see wallMs above).
         let agentWall = 0;
@@ -871,9 +885,10 @@ function buildReportFromDb(days) {
           speed: msgAgentAgg[agent] && msgAgentAgg[agent].ms > 0 ? Math.round((msgAgentAgg[agent].o / (msgAgentAgg[agent].ms / 1000)) * 10) / 10 : null,
           wallMs: Math.round(agentWall),
           activeMs: msgAgentAgg[agent] ? Math.round(msgAgentAgg[agent].ms) : 0,
-          market: market === null ? null : Math.round(market * 10000) / 10000,
-          saved: market === null ? null : Math.round(saved * 10000) / 10000,
-          pricedAs: priced,
+          market: pricedAny ? Math.round(market * 10000) / 10000 : null,
+          saved: pricedAny ? Math.round(saved * 10000) / 10000 : null,
+          pricedAs: pricedAny ? (proxy > 0 && proxy >= market - 0.01 ? 'mixed' : 'exact') : null,
+          priced: pricedAny, kind: !pricedAny ? 'unpriced' : (unpriced > 0 ? 'partial' : (proxy > 0 ? 'proxy' : 'exact')),
         };
       })
       .sort((x, y) => y.cost - x.cost);
@@ -905,7 +920,7 @@ function buildReportFromDb(days) {
           tok_reasoning: Math.round(mg.rq || 0),
           cost: r4(ps.cost),
           speed: (mg.ms || 0) > 0 ? Math.round(((mg.o || 0) / (mg.ms / 1000)) * 10) / 10 : null,
-          market, saved, pricedAs,
+          market, saved, pricedAs, priced: mkS.priced, kind: mkS.kind,
         };
       })
       .sort((x, y) => y.activeMs - x.activeMs)
@@ -916,14 +931,19 @@ function buildReportFromDb(days) {
     var pSessionRows = [];
   }
 
-  // Period market = Σ provider rows (already period-scoped); saved = Σ provider
-  // saved so it can never mix a period cost with a lifetime market.
+  // Period market = Σ priced provider rows (already period-scoped); saved = Σ
+  // provider saved so it can never mix a period cost with a lifetime market.
+  // Unpriced rows are disclosed, not valued.
   const sumMkt = (rows) => rows.reduce((s, r) => s + (r.market || 0), 0);
   const sumSaved = (rows) => rows.reduce((s, r) => s + (r.saved || 0), 0);
   statsR.cost.marketTotal = Math.round(sumMkt(pProviderRows) * 10000) / 10000;
   statsR.cost.savedTotal = Math.round(sumSaved(pProviderRows) * 10000) / 10000;
   statsR.cost.savedPct = statsR.cost.marketTotal > 0 ? Math.round((statsR.cost.savedTotal / statsR.cost.marketTotal) * 1000) / 10 : null;
   statsR.cost.priceAsOf = pricing.catalogInfo().ok ? new Date(pricing.catalogInfo().mtimeMs).toISOString() : null;
+  statsR.cost.unpricedRows = pProviderRows.filter((r) => !r.priced).length;
+  statsR.cost.unpricedTokens = pProviderRows.filter((r) => !r.priced).reduce((s, r) => s + r.tok_in + r.tok_out + r.tok_reasoning + r.cache_read, 0);
+  const proxyMkt = pProviderRows.filter((r) => r.kind === 'proxy').reduce((s, r) => s + (r.market || 0), 0);
+  statsR.cost.proxyShare = statsR.cost.marketTotal > 0 ? Math.round((proxyMkt / statsR.cost.marketTotal) * 1000) / 10 : null;
 
   return {
     label,

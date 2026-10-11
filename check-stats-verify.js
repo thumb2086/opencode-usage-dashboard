@@ -50,21 +50,34 @@ const pricing = require('./pricing');
   chk('medianTokensSession', d.cost.medianTokensSession, Math.round(med), 1);
 
   // savings: priced per MESSAGE model (same perModel buckets as server), so
-  // overview and the report providers table share one basis.
+  // overview and the report providers table share one basis. Models the
+  // catalog cannot price are EXCLUDED from the total and counted for the
+  // disclosure fields — never valued at an invented rate.
   {
-    let expMarket = 0, hasNull = false;
+    let expMarket = 0, unpricedRows = 0, unpricedTokens = 0, proxyMarket = 0, noCatalog = false;
     for (const [name, m] of Object.entries(exp.perModel)) {
       const i = name.indexOf('/');
       const provider = i < 0 ? 'unknown' : name.slice(0, i);
       const model = i < 0 ? name : name.slice(i + 1);
       const pr = pricing.priceFor(provider, model);
-      if (!pr) { hasNull = true; break; }
-      expMarket += pricing.marketOf({ input: m.input, output: m.output, reasoning: m.reasoning, cacheRead: m.cacheRead }, pr) || 0;
+      if (!pricing.catalogInfo().ok) { noCatalog = true; break; }
+      if (!pr) {
+        unpricedRows++;
+        unpricedTokens += m.input + m.output + m.reasoning + m.cacheRead;
+        continue;
+      }
+      const mk = pricing.marketOf({ input: m.input, output: m.output, reasoning: m.reasoning, cacheRead: m.cacheRead }, pr) || 0;
+      expMarket += mk;
+      if (pr.kind === 'proxy') proxyMarket += mk;
     }
-    if (!hasNull) {
+    if (!noCatalog) {
       expMarket = Math.round(expMarket * 10000) / 10000;
+      proxyMarket = Math.round(proxyMarket * 10000) / 10000;
       chkGrow('cost.marketTotal', d.cost.marketTotal, expMarket, Math.max(0.05, expMarket * 0.02));
       chkGrow('cost.savedTotal', d.cost.savedTotal, Math.round((expMarket - tt.cost) * 10000) / 10000, Math.max(0.05, expMarket * 0.02));
+      chk('cost.unpricedRows', d.cost.unpricedRows, unpricedRows);
+      chkGrow('cost.unpricedTokens', d.cost.unpricedTokens, unpricedTokens, Math.max(1e6, unpricedTokens * 0.02));
+      chk('cost.proxyShare', d.cost.proxyShare, expMarket > 0 ? Math.round((proxyMarket / expMarket) * 1000) / 10 : null, 0.2);
     } else {
       console.log('SKIP cost.marketTotal: no pricing catalog');
     }

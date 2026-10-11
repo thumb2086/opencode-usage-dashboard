@@ -1,15 +1,21 @@
 // Shared market-price engine for the "how much did I save" feature.
 // Pricing comes from the user's local opencode models catalog
-// (~/.cache/opencode/models.json):
-//   { provider: { models: { name: { cost: { input, output, cache_read } } } } }
-// in USD per 1M tokens. Free variants (cost 0) are mapped to a paid basis:
-//   1. exact provider/model with nonzero cost
-//   2. strip -free / -contributor-free suffix, same provider, nonzero cost
-//   3. same base name under provider 'opencode', nonzero cost
-//   4. same base name under any provider (sorted, first nonzero)
-//   5. proxy fallback: opencode/deepseek-v4-flash rates (marked "proxy:")
-// Reasoning tokens have no catalog rate and are billed at the output rate.
-// cache_write is always 0 in the DB and contributes nothing.
+// (~/.cache/opencode/models.json): { provider: { models: { name: { cost: { input,
+// output, cache_read } } } } } in USD per 1M tokens.
+//
+// A free variant is mapped to a paid basis, in order:
+//   1. exact provider/model with a nonzero cost            -> kind 'exact'
+//   2. same provider, free suffix stripped (:free / -free /
+//      -contributor-free) or duplicated provider prefix   -> kind 'sibling'
+//   3. same base name under provider 'opencode'            -> kind 'proxy'
+//   4. same base name anywhere else (cheapest nonzero)     -> kind 'proxy'
+//   5. nothing in the catalog                              -> null (NOT priced;
+//      inventing a number here is how a $0 model turned into $212 of fake
+//      savings). Callers must show '—' and can disclose the unpriced rows.
+//
+// Reasoning has no catalog rate and bills at the output rate (verified:
+// tokens.output does not include reasoning — 8,764 messages have
+// reasoning > output). cache_write is always 0 in the DB.
 const fs = require('fs');
 const path = require('path');
 
@@ -41,39 +47,67 @@ function nonzero(cost) {
   return (cost.input || 0) > 0 || (cost.output || 0) > 0 || (cost.cache_read || 0) > 0;
 }
 
-function ratesOf(data, provider, model) {
-  const cost = data[provider] && data[provider].models && data[provider].models[model] && data[provider].models[model].cost;
-  if (!nonzero(cost)) return null;
-  return { input: cost.input || 0, output: cost.output || 0, cacheRead: cost.cache_read || 0, source: `${provider}/${model}` };
+function entry(data, provider, model) {
+  const c = data[provider] && data[provider].models && data[provider].models[model] && data[provider].models[model].cost;
+  return nonzero(c) ? { input: c.input || 0, output: c.output || 0, cacheRead: c.cache_read || 0 } : null;
 }
 
-// Map a usage model (provider/model as seen in the DB) to paid rates.
-// Returns { input, output, cacheRead, source, exact } or null when no catalog.
+const stripFree = (m) => String(m).replace(/-contributor-free$/, '').replace(/-free$/, '').replace(/:free$/, '');
+
+// Map a usage model (provider/model as recorded in the DB) to paid rates.
+// Returns { input, output, cacheRead, source, kind } or null when the catalog
+// has no comparable paid listing at all.
 function priceFor(provider, model) {
   const cat = loadCatalog();
   if (!cat.data) return null;
   const data = cat.data;
   provider = provider || 'unknown';
   model = model || 'unknown';
-  let r = ratesOf(data, provider, model);
-  if (r) return { ...r, exact: true };
-  if (model === 'unknown') {
-    const fb = ratesOf(data, 'opencode', 'deepseek-v4-flash');
-    return fb ? { ...fb, source: 'proxy:opencode/deepseek-v4-flash', exact: false } : null;
+  if (model === 'unknown') return null; // unattributed usage: never invent a rate
+
+  const mk = (p, m, kind) => {
+    const r = entry(data, p, m);
+    return r ? { ...r, source: `${p}/${m}`, kind } : null;
+  };
+
+  let r = mk(provider, model, 'exact');
+  if (r) return r;
+
+  // Free suffixes and a provider prefix duplicated inside the model id
+  // (opencode records nvidia/nvidia/nemotron-... on some sessions). The plain
+  // base is always kept: a model that is free at ITS provider (cost 0) may
+  // still have a paid listing elsewhere (e.g. nvidia/z-ai/glm-5.3-flash).
+  const bases = [];
+  const deDup = model.startsWith(`${provider}/`) ? model.slice(provider.length + 1) : null;
+  for (const b of [stripFree(model), deDup && stripFree(deDup), deDup, model]) {
+    if (b && !bases.includes(b)) bases.push(b);
   }
-  const base = String(model).replace(/-contributor-free$/, '').replace(/-free$/, '');
-  const cands = [];
-  if (base !== model) cands.push([provider, base]);
-  cands.push(['opencode', base]);
-  for (const pid of Object.keys(data).sort()) {
-    if (pid !== provider && pid !== 'opencode') cands.push([pid, base]);
+  for (const b of bases) {
+    if (b === model) continue;
+    r = mk(provider, b, 'sibling');
+    if (r) return r;
   }
-  for (const [p, m] of cands) {
-    r = ratesOf(data, p, m);
-    if (r) return { ...r, exact: false };
+  for (const b of bases) {
+    r = mk('opencode', b, 'proxy');
+    if (r) return r;
   }
-  const fb = ratesOf(data, 'opencode', 'deepseek-v4-flash');
-  return fb ? { ...fb, source: 'proxy:opencode/deepseek-v4-flash', exact: false } : null;
+  // Any provider, cheapest nonzero listing for the same base name. Cheapest
+  // keeps the estimate conservative (it understates savings, never inflates).
+  for (const b of bases) {
+    let best = null;
+    for (const pid of Object.keys(data).sort()) {
+      const e = entry(data, pid, b);
+      if (!e) continue;
+      const score = e.input + e.output + e.cacheRead;
+      if (!best || score < best.score) best = { ...e, score, pid };
+    }
+    if (best) {
+      const { score, pid, ...rates } = best;
+      void score;
+      return { ...rates, source: `${pid}/${b}`, kind: 'proxy' };
+    }
+  }
+  return null;
 }
 
 // Market value (USD) of token usage at the given rates.
@@ -91,4 +125,4 @@ function catalogInfo() {
   return cat.data ? { ok: true, path: cat.path, mtimeMs: cat.mtimeMs } : { ok: false };
 }
 
-module.exports = { priceFor, marketOf, catalogInfo };
+module.exports = { priceFor, marketOf, catalogInfo, loadCatalog };

@@ -157,15 +157,19 @@ const splitName = (name) => {
       for (const m of db.prepare(`SELECT id, agent, COALESCE(json_extract(model,'$.providerID'),'unknown') AS provider, COALESCE(json_extract(model,'$.id'),'unknown') AS model, title, time_created AS tc, time_updated AS tu FROM ${T.session} WHERE id IN (${ph})`).all(...periodSessionIds)) metaMap[m.id] = m;
     }
     const expAgents = Object.entries(exp.perAgentPeriod).map(([agent, m]) => {
-      let market = 0, saved = 0;
+      // Same rule as the server: skip models the catalog cannot price (they
+      // contribute no money and are disclosed), keep summing the priced ones.
+      let market = 0, saved = 0, pricedAny = false;
       const bag = exp.perAgentModelPeriod[agent] || {};
       for (const [name, b] of Object.entries(bag)) {
         const { provider, model } = splitName(name);
         const pr = pricing.priceFor(provider, model);
-        const mk = pr ? pricing.marketOf({ input: b.input, output: b.output, reasoning: b.reasoning, cacheRead: b.cacheRead }, pr) : null;
-        if (mk === null) { market = null; break; }
+        if (!pr) continue;
+        const mk = pricing.marketOf({ input: b.input, output: b.output, reasoning: b.reasoning, cacheRead: b.cacheRead }, pr);
+        if (mk === null) continue;
         market += mk;
         saved += mk - b.cost;
+        pricedAny = true;
       }
       // Wall from the message clock (subagent sessions write time_updated ==
     // time_created, so session-table spans would read as ~0).
@@ -182,7 +186,8 @@ const splitName = (name) => {
         agent, sessions: m.sessions.size, tok_in: Math.round(m.input),
         speed: agMs > 0 ? Math.round((agO / (agMs / 1000)) * 10) / 10 : null,
         wallMs: Math.round(wallMs), activeMs: Math.round(agMs),
-        market: market === null ? null : r4m(market), saved: market === null ? null : r4m(saved),
+        market: pricedAny ? r4m(market) : null, saved: pricedAny ? r4m(saved) : null,
+        priced: pricedAny,
       };
     });
     const byAgent = {};
