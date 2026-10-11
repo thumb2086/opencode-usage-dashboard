@@ -151,6 +151,18 @@ chk('window.__setScope / __renderAll / __lastReport exposed',
 chk('default scope tag on headline', textOf('tag-headline') === STRINGS.en.scopeSuffix['7']);
 chk('headline tokens split into in/out/reasoning/cache',
   ['hl-tokens', 'hl-in', 'hl-out', 'hl-reasoning', 'hl-cache'].every((id) => textOf(id) && textOf(id) !== EM));
+// The headline must EXCLUDE cache re-reads (they re-count the same context
+// every turn and would otherwise inflate it by ~30x).
+chk('headline excludes cache re-reads', (() => {
+  const c = (r.stats && r.stats.cost) || {};
+  const parse = (s) => { const m = String(s).trim().match(/^([\d.]+)\s*([KMB])?$/i); if (!m) return NaN; const mul = { k: 1e3, m: 1e6, b: 1e9 }[(m[2] || '').toLowerCase()] || 1; return parseFloat(m[1]) * mul; };
+  const shown = parse(textOf('hl-tokens'));
+  const core = (c.input || 0) + (c.output || 0) + (c.reasoning || 0);
+  const withCache = core + (c.cacheRead || 0);
+  const near = (a, b) => Number.isFinite(a) && Math.abs(a - b) <= Math.max(b * 0.03, 1000);
+  return near(shown, core) && !near(shown, withCache);
+})());
+chk('cache label says re-reads', /re-read/i.test(STRINGS.en.tCache) && /re-read|重讀/i.test(STRINGS['zh-TW'].tCache));
 chk('headline cost / market / saved rendered as $',
   [textOf('hl-cost'), textOf('hl-market'), textOf('hl-saved')].every((v) => v.includes('$')));
 chk('market card shows prices as of YYYY-MM-DD',
@@ -210,7 +222,19 @@ chk('trend x-axis puts today (newest bucket) leftmost',
   stripTags((htmlOf('trend-token-x').match(/<span[^>]*>([^<]*)<\/span>/g) || []).pop().replace(/<[^>]*>/g, '')) === nLabels[nLabels.length - 1]);
 chk('trend tooltip carries per-day detail', htmlOf('trend-tokens').includes('title='));
 chk('trend cost chart or all-free note', htmlOf('trend-cost').length > 0 || textOf('costZeroNote') === STRINGS.en.allFree);
-chk('tools render one row per tool', (htmlOf('tool-bars').match(/class="bar-row"/g) || []).length === (stats.data.tools || []).length);
+// Tools: top 12 + one aggregated "N more tools" row (the long tail is noise).
+{
+  const toolRows = (htmlOf('tool-bars').match(/class="bar-row"/g) || []).length;
+  const nTools = (stats.data.tools || []).length;
+  const wantRows = Math.min(12, nTools) + (nTools > 12 ? 1 : 0);
+  chk('tools rows = top12 + aggregate', toolRows === wantRows);
+  chk('tools aggregate row present', nTools <= 12 || /more tools|其他/.test(htmlOf('tool-bars')));
+  chk('tools container is not a bar-row', !/class="bar-row"[^>]*id="tool-bars"/.test(html));
+  chk('tools rows are proportional', (() => {
+    const w = [...htmlOf('tool-bars').matchAll(/width:([\d.]+)%/g)].map((m) => parseFloat(m[1]));
+    return w.length > 2 && w[0] >= w[w.length - 1] && w.some((x) => x > 50);
+  })());
+}
 chk('tools disclose they cannot be sliced by scope', /tool counts are all-time/.test(textOf('tag-tools')));
 chk('raw text statement preserved', textOf('rawText').includes('OPENCODE USAGE STATEMENT') && textOf('rawText').includes('Period:'));
 

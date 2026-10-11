@@ -94,20 +94,20 @@ const splitName = (name) => {
       FROM ${T.message} WHERE time_created >= ${startMs} AND time_created < ? GROUP BY session_id, COALESCE(json_extract(data,'$.agent'),'unknown')`).all(endMs)) {
       agentMs[`${b.sid}|${b.agent}`] = b;
     }
-    // Per-session wall span on the message clock, same basis as server.
+    // Per-session wall span on the message clock (same basis as server).
+    // MIN(NULLIF(time_created, 0)): imported epoch rows (time_created = 0)
+    // would otherwise stretch a session span into decades.
     const wallBySid = {};
-    for (const b of db.prepare(`SELECT session_id AS sid, MIN(time_created) AS t0,
-      MAX(COALESCE(CAST(json_extract(data,'$.time.completed') AS INTEGER), time_updated)) AS t1
-      FROM ${T.message} WHERE time_created >= ${startMs} AND time_created < ? GROUP BY session_id`).all(endMs)) {
-      wallBySid[b.sid] = Math.max(0, (+b.t1 || 0) - (+b.t0 || 0));
-    }
     const msgMap = {};
     for (const m of db.prepare(`SELECT session_id AS sid, COUNT(*) AS n,
+      MIN(NULLIF(time_created, 0)) AS w0,
+      MAX(COALESCE(CAST(json_extract(data,'$.time.completed') AS INTEGER), time_updated)) AS w1,
       COALESCE(SUM(CASE WHEN CAST(json_extract(data,'$.tokens.output') AS INTEGER) > 0 AND CAST(json_extract(data,'$.time.completed') AS INTEGER) > CAST(json_extract(data,'$.time.created') AS INTEGER) THEN CAST(json_extract(data,'$.tokens.output') AS INTEGER) ELSE 0 END),0) AS o,
       COALESCE(SUM(CASE WHEN CAST(json_extract(data,'$.tokens.output') AS INTEGER) > 0 AND CAST(json_extract(data,'$.time.completed') AS INTEGER) > CAST(json_extract(data,'$.time.created') AS INTEGER) THEN CAST(json_extract(data,'$.tokens.reasoning') AS INTEGER) ELSE 0 END),0) AS rq,
       COALESCE(SUM(CASE WHEN CAST(json_extract(data,'$.tokens.output') AS INTEGER) > 0 AND CAST(json_extract(data,'$.time.completed') AS INTEGER) > CAST(json_extract(data,'$.time.created') AS INTEGER) THEN CAST(json_extract(data,'$.time.completed') AS INTEGER) - CAST(json_extract(data,'$.time.created') AS INTEGER) ELSE 0 END),0) AS ms
       FROM ${T.message} WHERE time_created >= ${startMs} AND time_created < ? GROUP BY sid`).all(endMs)) {
       msgMap[m.sid] = m;
+      if (m.w0 != null) wallBySid[m.sid] = Math.max(0, (+m.w1 || 0) - (+m.w0 || 0));
     }
 
     // Providers: period buckets, priced per model.

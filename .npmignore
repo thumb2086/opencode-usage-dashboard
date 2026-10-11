@@ -1,6 +1,7 @@
 .env
 backups/
 check-*.js
+.attr-bundle.json
 server.out.log
 server.err.log
 job.log

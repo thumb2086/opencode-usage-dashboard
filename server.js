@@ -80,13 +80,13 @@ const EXE = (() => {
 
 // OpenCode V2 writes sessions to session_v2 and messages to session_message
 // (tool parts embedded in message content); V1 used session/message/part and
-// froze at the upgrade. The V2 migration is LOSSY, so merge — never switch:
+// froze at the upgrade. The V2 migration is LOSSY, so merge ??never switch:
 // - 455/734 migrated sessions LOST their lifetime totals (196M input tokens):
 //   V2 recomputed them from surviving messages, dropping pruned compaction
 //   history (sessions whose messages were fully pruned went to 0). V1's frozen
 //   totals are the authoritative record, so take per-field MAX of the shared
-//   rows (same lifetime counter — never SUM, that would double count).
-// - 30 messages were never migrated (4.3M input tokens) → union them in.
+//   rows (same lifetime counter ??never SUM, that would double count).
+// - 30 messages were never migrated (4.3M input tokens) ??union them in.
 // - Tool parts: embedded content already covers migrated V1 parts, so only
 //   parts of never-migrated messages are added from `part` (everything else
 //   would double count).
@@ -212,13 +212,13 @@ function cleanExpiredCache(cache, ttl) {
 async function generateTrend(days) {
   // Buckets: local midnights, today -> (days-1) days ago.
   // Values are sliced from the SHARED all-time attribution (getAttrAll(),
-  // the same object the usage report uses) — never a separate windowed
+  // the same object the usage report uses) ??never a separate windowed
   // attributeUsage call. Windowed attribution inflates in-window days:
   // messages before the window are excluded from msgTok, so the session
   // residual grows and lands entirely on windowed days (measured
-  // +0.25–1.7M input/day on 2026-09-29). One shared attribution makes
+  // +0.25??.7M input/day on 2026-09-29). One shared attribution makes
   // trend buckets and report periods structurally identical; any remaining
-  // panel difference is only cache age (trend ≤60s, report ≤10min, both
+  // panel difference is only cache age (trend ??0s, report ??0min, both
   // timestamps shown in the UI).
   const buckets = [];
   const today = new Date();
@@ -279,7 +279,7 @@ function splitModelName(name) {
 }
 
 // Market estimate for token usage at catalog paid rates (USD). saved is
-// market minus actual cost. kind is 'exact' | 'sibling' | 'proxy' — how the
+// market minus actual cost. kind is 'exact' | 'sibling' | 'proxy' ??how the
 // rate was found; null (kind 'unpriced') when the catalog has NO comparable
 // paid listing, in which case we report no money at all rather than inventing
 // a rate (that fake rate once turned a $0 model into $212 of phantom savings).
@@ -308,105 +308,161 @@ function marketOf(tok, provider, model) {
 // buckets (perDay/perModel/perSession) are unaffected, so one scan serves both
 // the trend (lifetime) and the report (period) views. Period buckets group
 // message tokens by the MESSAGE's own model/agent, and spread session residual
-// by the session's model/agent — so per-model report rows sum exactly to the
+// by the session's model/agent ??so per-model report rows sum exactly to the
 // period totals (self-consistent by construction).
-function attributeUsage(startMs, endMs, periodStartMs) {
-  const periodOn = periodStartMs != null;
-  const inPeriod = periodOn ? (key) => dateOfKey(key).getTime() >= periodStartMs : () => false;
+// Hybrid attribution over [startMs, endMs), message layer + session residual.
+//
+// PERFORMANCE (measured 2026-10-11 on 62k messages / 993MB of JSON):
+// message rows are fetched as raw `data` and parsed ONCE in Node. Doing the
+// same work with a dozen json_extract() calls per row costs 43.6s in SQLite
+// (it re-parses the whole content blob for every call) versus 1.6s + 0.9s
+// this way. Period slices are folded in the same pass, so the trend, the
+// overview and every report period share ONE scan per ATTR_TTL instead of
+// paying for their own.
+//
+// Message tokens go to their exact local day; each session's residual
+// (session totals minus its message sums, clamped >= 0) is spread across the
+// session's full local-day span, weighted by its per-day message volume
+// (uniform across spanned days when the session has no messages).
+//
+// periodStartsMs: optional ARRAY of local-midnight boundaries. Boundaries are
+// NESTED (today ⊂ 7d ⊂ MTD ⊂ all), so a day feeds every boundary at or
+// before it. Per-period buckets group message tokens by the MESSAGE's own
+// model/agent and spread residual by the session's, so report rows sum
+// exactly to the period totals. Each slice also carries msgAgg (per session:
+// message count, output, reasoning, active ms, wall span on the MESSAGE clock)
+// and msgAgentAgg, so reports need no extra queries.
+const ATTR_TTL = 300000;
+// Tool counts change slowly but the embedded-content scan costs ~1.5s on a
+// large DB; cache it so the 15s refresh stays cheap. Keyed on schema+window.
+let toolsCache = null;
+const yieldToLoop = () => new Promise((r) => setImmediate(r));
+
+function newTokBucket() {
+  return { input: 0, output: 0, reasoning: 0, cacheRead: 0, cacheWrite: 0, cost: 0 };
+}
+function addTok(b, iv, ov, rv, crv, cwv, cv) {
+  b.input += iv; b.output += ov; b.reasoning += rv; b.cacheRead += crv; b.cacheWrite += cwv; b.cost += cv;
+}
+
+async function attributeUsage(startMs, endMs, periodStartsMs) {
+  const starts = (Array.isArray(periodStartsMs) ? periodStartsMs : [periodStartsMs])
+    .filter((x) => x != null).sort((a, b) => a - b);
+
   const perDay = {};
   const perModel = {};
   const perAgent = {};
   const perSession = {};
-  const perModelPeriod = {};
-  const perAgentPeriod = {};
-  const perAgentModelPeriod = {};
-  const perSessionPeriod = {};
-  const perSessionModelPeriod = {};
-  const ensureDay = (key) => perDay[key] || (perDay[key] = { date: dateOfKey(key), sessions: new Set(), messages: 0, input: 0, output: 0, reasoning: 0, cacheRead: 0, cacheWrite: 0, cost: 0 });
-  const ensureModel = (n) => perModel[n] || (perModel[n] = { messages: 0, sessions: new Set(), input: 0, output: 0, reasoning: 0, cacheRead: 0, cacheWrite: 0, cost: 0, speedOut: 0, speedMs: 0 });
-  const ensureAgent = (a) => perAgent[a || 'unknown'] || (perAgent[a || 'unknown'] = { messages: 0, sessions: new Set(), input: 0, output: 0, reasoning: 0, cacheRead: 0, cacheWrite: 0, cost: 0 });
-  const tok = () => ({ input: 0, output: 0, reasoning: 0, cacheRead: 0, cacheWrite: 0, cost: 0 });
-  const ensureModelP = (n) => perModelPeriod[n] || (perModelPeriod[n] = { messages: 0, sessions: new Set(), input: 0, output: 0, reasoning: 0, cacheRead: 0, cacheWrite: 0, cost: 0, speedOut: 0, speedMs: 0 });
-  const ensureAgentP = (a) => perAgentPeriod[a || 'unknown'] || (perAgentPeriod[a || 'unknown'] = { sessions: new Set(), input: 0, output: 0, reasoning: 0, cacheRead: 0, cacheWrite: 0, cost: 0, speedOut: 0, speedMs: 0 });
-  const ensureAgentModelP = (a, m) => {
-    const k = a || 'unknown';
-    const bag = perAgentModelPeriod[k] || (perAgentModelPeriod[k] = {});
-    return bag[m] || (bag[m] = tok());
-  };
-  const ensureSessP = (sid) => perSessionPeriod[sid] || (perSessionPeriod[sid] = tok());
-  const ensureSessModelP = (sid, m) => {
-    const bag = perSessionModelPeriod[sid] || (perSessionModelPeriod[sid] = {});
-    return bag[m] || (bag[m] = tok());
-  };
-
-  // 1. messages in period (exact timing)
   const msgTok = {};
   const msgW = {};
-  const mrows = dbQuery(`SELECT time_created AS t, session_id AS sid, COALESCE(json_extract(data, '$.agent'), 'unknown') AS agent, COALESCE(json_extract(data, '$.providerID'), json_extract(data, '$.model.providerID'), 'unknown') AS provider, COALESCE(json_extract(data, '$.modelID'), json_extract(data, '$.model.modelID'), json_extract(data, '$.model.id'), 'unknown') AS model, COALESCE(CAST(json_extract(data, '$.tokens.input') AS INTEGER), 0) AS input, COALESCE(CAST(json_extract(data, '$.tokens.output') AS INTEGER), 0) AS output, COALESCE(CAST(json_extract(data, '$.tokens.reasoning') AS INTEGER), 0) AS reasoning, COALESCE(CAST(json_extract(data, '$.tokens.cache.read') AS INTEGER), 0) AS cacheRead, COALESCE(CAST(json_extract(data, '$.tokens.cache.write') AS INTEGER), 0) AS cacheWrite, COALESCE(CAST(json_extract(data, '$.cost') AS REAL), 0) AS cost, CAST(json_extract(data, '$.time.created') AS INTEGER) AS t0, CAST(json_extract(data, '$.time.completed') AS INTEGER) AS t1 FROM ${schema.message} WHERE time_created >= ${startMs} AND time_created < ${endMs};`) || [];
-  for (const r of mrows) {
-    const key = localDayKey(new Date(r.t));
+  const ensureDay = (key) => perDay[key] || (perDay[key] = { date: dateOfKey(key), sessions: new Set(), messages: 0, ...newTokBucket() });
+  const ensureModel = (n) => perModel[n] || (perModel[n] = { messages: 0, sessions: new Set(), ...newTokBucket(), speedOut: 0, speedMs: 0 });
+  const ensureAgent = (a) => perAgent[a || 'unknown'] || (perAgent[a || 'unknown'] = { messages: 0, sessions: new Set(), ...newTokBucket() });
+
+  const slices = starts.map((s) => {
+    const perModelP = {}, perAgentP = {}, perAgentModelP = {}, perSessionP = {}, perSessionModelP = {};
+    const msgAgg = {}, msgAgentAgg = {};
+    return {
+      start: s,
+      perModel: perModelP, perAgent: perAgentP, perAgentModel: perAgentModelP,
+      perSession: perSessionP, perSessionModel: perSessionModelP,
+      msgAgg, msgAgentAgg,
+      model: (n) => perModelP[n] || (perModelP[n] = { messages: 0, sessions: new Set(), ...newTokBucket(), speedOut: 0, speedMs: 0 }),
+      agent: (a) => perAgentP[a || 'unknown'] || (perAgentP[a || 'unknown'] = { sessions: new Set(), ...newTokBucket(), speedOut: 0, speedMs: 0 }),
+      agentModel: (a, m) => {
+        const k = a || 'unknown';
+        const bag = perAgentModelP[k] || (perAgentModelP[k] = {});
+        return bag[m] || (bag[m] = newTokBucket());
+      },
+      sess: (sid) => perSessionP[sid] || (perSessionP[sid] = newTokBucket()),
+      sessModel: (sid, m) => {
+        const bag = perSessionModelP[sid] || (perSessionModelP[sid] = {});
+        return bag[m] || (bag[m] = newTokBucket());
+      },
+    };
+  });
+
+  const rows = dbQuery(`SELECT time_created AS t, session_id AS sid, data FROM ${schema.message} WHERE time_created >= ${startMs} AND time_created < ${endMs};`) || [];
+  let processed = 0;
+  for (const row of rows) {
+    let d = null;
+    try { d = JSON.parse(row.data); } catch (_) { d = null; }
+    processed++;
+    if (!d) continue;
+    const key = localDayKey(new Date(row.t));
+    const dayMs = dateOfKey(key).getTime();
+    const tk = d.tokens || {};
+    const cache = tk.cache || {};
+    const iv = +tk.input || 0, ov = +tk.output || 0, rv = +tk.reasoning || 0;
+    const crv = +cache.read || 0, cwv = +cache.write || 0, cv = +d.cost || 0;
+    const md = d.model || {};
+    const provider = d.providerID || md.providerID || 'unknown';
+    const model = d.modelID || md.modelID || md.id || 'unknown';
+    const agent = d.agent || 'unknown';
+    const mName = `${provider || 'unknown'}/${model || 'unknown'}`;
+    const dm = d.time || {};
+    const t0 = +dm.created || 0, t1 = +dm.completed || 0;
+    const hasDur = ov > 0 && t1 > t0;
+
     const D = ensureDay(key);
     D.messages++;
-    if (r.sid) D.sessions.add(r.sid);
-    const iv = +r.input || 0, ov = +r.output || 0, rv = +r.reasoning || 0;
-    const crv = +r.cacheRead || 0, cwv = +r.cacheWrite || 0, cv = +r.cost || 0;
-    D.input += iv; D.output += ov; D.reasoning += rv; D.cacheRead += crv; D.cacheWrite += cwv; D.cost += cv;
-    const M = ensureModel(modelNameOf(r.provider, r.model));
+    if (row.sid) D.sessions.add(row.sid);
+    addTok(D, iv, ov, rv, crv, cwv, cv);
+    const M = ensureModel(mName);
     M.messages++;
-    if (r.sid) M.sessions.add(r.sid);
-    M.input += iv; M.output += ov; M.reasoning += rv; M.cacheRead += crv; M.cacheWrite += cwv; M.cost += cv;
-    // Message-level generation speed only (session residuals have no
-    // duration): output tokens per active second over completed messages.
-    const t0 = +r.t0 || 0, t1 = +r.t1 || 0;
-    if (ov > 0 && t1 > t0) { M.speedOut += ov; M.speedMs += (t1 - t0); }
-    const A = ensureAgent(r.agent);
+    if (row.sid) M.sessions.add(row.sid);
+    addTok(M, iv, ov, rv, crv, cwv, cv);
+    if (hasDur) { M.speedOut += ov; M.speedMs += (t1 - t0); }
+    const A = ensureAgent(agent);
     A.messages++;
-    if (r.sid) A.sessions.add(r.sid);
-    A.input += iv; A.output += ov; A.reasoning += rv; A.cacheRead += crv; A.cacheWrite += cwv; A.cost += cv;
-    if (r.sid) {
-      const mt = msgTok[r.sid] || (msgTok[r.sid] = { input: 0, output: 0, reasoning: 0, cacheRead: 0, cacheWrite: 0, cost: 0 });
-      mt.input += iv; mt.output += ov; mt.reasoning += rv; mt.cacheRead += crv; mt.cacheWrite += cwv; mt.cost += cv;
-      const w = msgW[r.sid] || (msgW[r.sid] = { total: 0, perDay: {} });
+    if (row.sid) A.sessions.add(row.sid);
+    addTok(A, iv, ov, rv, crv, cwv, cv);
+
+    if (row.sid) {
+      const mt = msgTok[row.sid] || (msgTok[row.sid] = newTokBucket());
+      addTok(mt, iv, ov, rv, crv, cwv, cv);
+      const w = msgW[row.sid] || (msgW[row.sid] = { total: 0, perDay: {} });
       const vol = iv + ov + rv + crv + cwv;
       w.total += vol;
       w.perDay[key] = (w.perDay[key] || 0) + vol;
     }
-    // Period slice: message tokens under the MESSAGE's own model/agent.
-    if (periodOn && inPeriod(key)) {
-      const mName = modelNameOf(r.provider, r.model);
-      const aName = r.agent || 'unknown';
-      const MP = ensureModelP(mName);
+
+    for (const sl of slices) {
+      if (dayMs < sl.start) continue;
+      const MP = sl.model(mName);
       MP.messages++;
-      if (r.sid) MP.sessions.add(r.sid);
-      MP.input += iv; MP.output += ov; MP.reasoning += rv; MP.cacheRead += crv; MP.cacheWrite += cwv; MP.cost += cv;
-      if (ov > 0 && t1 > t0) { MP.speedOut += ov; MP.speedMs += (t1 - t0); }
-      const AP = ensureAgentP(aName);
-      if (r.sid) AP.sessions.add(r.sid);
-      AP.input += iv; AP.output += ov; AP.reasoning += rv; AP.cacheRead += crv; AP.cacheWrite += cwv; AP.cost += cv;
-      if (ov > 0 && t1 > t0) { AP.speedOut += ov; AP.speedMs += (t1 - t0); }
-      const AM = ensureAgentModelP(aName, mName);
-      AM.input += iv; AM.output += ov; AM.reasoning += rv; AM.cacheRead += crv; AM.cacheWrite += cwv; AM.cost += cv;
-      if (r.sid) {
-        const SP = ensureSessP(r.sid);
-        SP.input += iv; SP.output += ov; SP.reasoning += rv; SP.cacheRead += crv; SP.cacheWrite += cwv; SP.cost += cv;
-        const SM = ensureSessModelP(r.sid, mName);
-        SM.input += iv; SM.output += ov; SM.reasoning += rv; SM.cacheRead += crv; SM.cacheWrite += cwv; SM.cost += cv;
+      if (row.sid) MP.sessions.add(row.sid);
+      addTok(MP, iv, ov, rv, crv, cwv, cv);
+      if (hasDur) { MP.speedOut += ov; MP.speedMs += (t1 - t0); }
+      const AP = sl.agent(agent);
+      if (row.sid) AP.sessions.add(row.sid);
+      addTok(AP, iv, ov, rv, crv, cwv, cv);
+      if (hasDur) { AP.speedOut += ov; AP.speedMs += (t1 - t0); }
+      addTok(sl.agentModel(agent, mName), iv, ov, rv, crv, cwv, cv);
+      if (row.sid) {
+        addTok(sl.sess(row.sid), iv, ov, rv, crv, cwv, cv);
+        addTok(sl.sessModel(row.sid, mName), iv, ov, rv, crv, cwv, cv);
+        const ma = sl.msgAgg[row.sid] || (sl.msgAgg[row.sid] = { n: 0, o: 0, rq: 0, ms: 0, w0: Infinity, w1: 0 });
+        ma.n++;
+        if (hasDur) { ma.o += ov; ma.rq += rv; ma.ms += (t1 - t0); }
+        if (row.t < ma.w0) ma.w0 = row.t;
+        if (t1 > ma.w1) ma.w1 = t1;
       }
+      const ag = sl.msgAgentAgg[agent] || (sl.msgAgentAgg[agent] = { o: 0, ms: 0 });
+      if (hasDur) { ag.o += ov; ag.ms += (t1 - t0); }
     }
+    if ((processed & 0x3fff) === 0) await yieldToLoop();
   }
 
-  // 2. sessions intersecting the period: spread residual
   const srows = dbQuery(`SELECT id, agent, COALESCE(json_extract(model, '$.providerID'), 'unknown') AS provider, COALESCE(json_extract(model, '$.id'), 'unknown') AS model, time_created AS tc, time_updated AS tu, tokens_input AS si, tokens_output AS so, tokens_reasoning AS sr, tokens_cache_read AS scr, tokens_cache_write AS scw, cost AS sc FROM ${schema.session} WHERE time_updated >= ${startMs} AND time_created < ${endMs};`) || [];
+  let sessProcessed = 0;
   for (const s of srows) {
-    // Use the session's FULL span for residual distribution. All consumers
-    // share one all-time attribution (getAttrAll), so per-day values are
-    // identical whichever period slices them.
     const d0 = new Date(new Date(s.tc).setHours(0, 0, 0, 0));
     const d1 = new Date(new Date(s.tu).setHours(0, 0, 0, 0));
     const spanKeys = [];
     for (let d = new Date(d0); d <= d1; d.setDate(d.getDate() + 1)) spanKeys.push(localDayKey(d));
-    if (!spanKeys.length) continue;
-    const mt = msgTok[s.id] || { input: 0, output: 0, reasoning: 0, cacheRead: 0, cacheWrite: 0, cost: 0 };
+    if (!spanKeys.length) { sessProcessed++; continue; }
+    const mt = msgTok[s.id] || newTokBucket();
     const res = {
       input: Math.max(0, (+s.si || 0) - mt.input),
       output: Math.max(0, (+s.so || 0) - mt.output),
@@ -415,7 +471,7 @@ function attributeUsage(startMs, endMs, periodStartMs) {
       cacheWrite: Math.max(0, (+s.scw || 0) - mt.cacheWrite),
       cost: Math.max(0, (+s.sc || 0) - mt.cost),
     };
-    const ps = perSession[s.id] || (perSession[s.id] = { input: mt.input, output: mt.output, reasoning: mt.reasoning, cacheRead: mt.cacheRead, cacheWrite: mt.cacheWrite, cost: mt.cost });
+    const ps = perSession[s.id] || (perSession[s.id] = { ...mt });
     const w = msgW[s.id];
     let wTotal = 0;
     if (w) { for (const k of spanKeys) wTotal += w.perDay[k] || 0; }
@@ -424,7 +480,7 @@ function attributeUsage(startMs, endMs, periodStartMs) {
     } else {
       ensureDay(localDayKey(new Date(s.tu))).sessions.add(s.id);
     }
-    const mName = modelNameOf(s.provider, s.model);
+    const mName = `${s.provider || 'unknown'}/${s.model || 'unknown'}`;
     const aName = s.agent || 'unknown';
     for (const k of spanKeys) {
       const share = wTotal > 0 ? ((w.perDay[k] || 0) / wTotal) : 1 / spanKeys.length;
@@ -432,76 +488,188 @@ function attributeUsage(startMs, endMs, periodStartMs) {
       const D = ensureDay(k);
       const di = res.input * share, dout = res.output * share, dr = res.reasoning * share;
       const dcr = res.cacheRead * share, dcw = res.cacheWrite * share, dc = res.cost * share;
-      D.input += di; D.output += dout; D.reasoning += dr; D.cacheRead += dcr; D.cacheWrite += dcw; D.cost += dc;
+      addTok(D, di, dout, dr, dcr, dcw, dc);
       const M = ensureModel(mName);
-      M.input += di; M.output += dout; M.reasoning += dr; M.cacheRead += dcr; M.cacheWrite += dcw; M.cost += dc;
+      addTok(M, di, dout, dr, dcr, dcw, dc);
       const A = ensureAgent(aName);
-      A.input += di; A.output += dout; A.reasoning += dr; A.cacheRead += dcr; A.cacheWrite += dcw; A.cost += dc;
-      ps.input += di; ps.output += dout; ps.reasoning += dr; ps.cacheRead += dcr; ps.cacheWrite += dcw; ps.cost += dc;
-      // Period slice: residual shares land under the SESSION's model/agent
-      // (no per-message model exists for residual), but only on days inside
-      // the period, so period rows sum exactly to the period totals.
-      if (periodOn && inPeriod(k)) {
-        const MP = ensureModelP(mName);
-        MP.input += di; MP.output += dout; MP.reasoning += dr; MP.cacheRead += dcr; MP.cacheWrite += dcw; MP.cost += dc;
-        const AP = ensureAgentP(aName);
-        AP.input += di; AP.output += dout; AP.reasoning += dr; AP.cacheRead += dcr; AP.cacheWrite += dcw; AP.cost += dc;
-        const AM = ensureAgentModelP(aName, mName);
-        AM.input += di; AM.output += dout; AM.reasoning += dr; AM.cacheRead += dcr; AM.cacheWrite += dcw; AM.cost += dc;
-        const SP = ensureSessP(s.id);
-        SP.input += di; SP.output += dout; SP.reasoning += dr; SP.cacheRead += dcr; SP.cacheWrite += dcw; SP.cost += dc;
-        const SM = ensureSessModelP(s.id, mName);
-        SM.input += di; SM.output += dout; SM.reasoning += dr; SM.cacheRead += dcr; SM.cacheWrite += dcw; SM.cost += dc;
+      addTok(A, di, dout, dr, dcr, dcw, dc);
+      addTok(ps, di, dout, dr, dcr, dcw, dc);
+      const dayMs = D.date.getTime();
+      for (const sl of slices) {
+        if (dayMs < sl.start) continue;
+        addTok(sl.model(mName), di, dout, dr, dcr, dcw, dc);
+        addTok(sl.agent(aName), di, dout, dr, dcr, dcw, dc);
+        addTok(sl.agentModel(aName, mName), di, dout, dr, dcr, dcw, dc);
+        addTok(sl.sess(s.id), di, dout, dr, dcr, dcw, dc);
+        addTok(sl.sessModel(s.id, mName), di, dout, dr, dcr, dcw, dc);
       }
     }
+    if ((++sessProcessed & 0x3f) === 0) await yieldToLoop();
   }
 
-  const totals = { sessions: Object.keys(perSession).length, messages: 0, input: 0, output: 0, reasoning: 0, cacheRead: 0, cacheWrite: 0, cost: 0 };
+  const totals = { sessions: Object.keys(perSession).length, messages: 0, ...newTokBucket() };
   for (const k of Object.keys(perDay)) {
     const D = perDay[k];
     totals.messages += D.messages;
-    totals.input += D.input; totals.output += D.output; totals.reasoning += D.reasoning;
-    totals.cacheRead += D.cacheRead; totals.cacheWrite += D.cacheWrite; totals.cost += D.cost;
+    addTok(totals, D.input, D.output, D.reasoning, D.cacheRead, D.cacheWrite, D.cost);
   }
+
+  const out = { perDay, perModel, perAgent, perSession, totals, periods: new Map() };
+  for (const sl of slices) {
+    // Every slice also carries the all-time day buckets: the report sums its
+    // periodDays off perDay, and period 0 (all-time) IS the all-time view.
+    out.periods.set(sl.start, {
+      start: sl.start,
+      perDay,
+      perModelPeriod: sl.perModel,
+      perAgentPeriod: sl.perAgent,
+      perAgentModelPeriod: sl.perAgentModel,
+      perSessionPeriod: sl.perSession,
+      perSessionModelPeriod: sl.perSessionModel,
+      msgAgg: sl.msgAgg,
+      msgAgentAgg: sl.msgAgentAgg,
+    });
+    if (sl.start === 0) {
+      // period 0 == all-time: expose the bucket names the report reads.
+      out.perModelPeriod = sl.perModel;
+      out.perAgentPeriod = sl.perAgent;
+      out.perAgentModelPeriod = sl.perAgentModel;
+      out.perSessionPeriod = sl.perSession;
+      out.perSessionModelPeriod = sl.perSessionModel;
+      out.msgAgg = sl.msgAgg;
+      out.msgAgentAgg = sl.msgAgentAgg;
+    }
+  }
+  return out;
+}
+
+// ---- shared attribution bundle cache ----------------------------------
+// One scan serves overview, trend and every report period. Memoized ATTR_TTL;
+// rebuilds run detached (and yield internally), so request handlers never pay
+// for the scan inline and the UI stays responsive while it happens.
+let attrAllCache = null;
+let attrBundlePending = false;
+let attrLastSave = 0;
+const EMPTY_ATTR = {
+  perDay: {}, perModel: {}, perAgent: {}, perSession: {},
+  totals: { sessions: 0, messages: 0, input: 0, output: 0, reasoning: 0, cacheRead: 0, cacheWrite: 0, cost: 0 },
+  periods: new Map(), msgAgg: {}, msgAgentAgg: {},
+};
+function periodStartsFor(now) {
   return {
-    perDay, perModel, perAgent, perSession, totals,
-    perModelPeriod, perAgentPeriod, perAgentModelPeriod, perSessionPeriod, perSessionModelPeriod,
-    periodStartMs,
+    1: periodStartMs(1, now),
+    7: periodStartMs(7, now),
+    30: periodStartMs(30, now),
+    '-1': 0,
   };
 }
-
-// All-time attribution, memoized 300s (expensive full DB scan; avoids
-// re-running attributeUsage on every /api/stats hit).
-let attrAllCache = null;
-// Tool counts change slowly but the embedded-content scan costs ~1.5s on a
-// large DB; cache it so the 15s refresh stays cheap. Keyed on schema+window.
-let toolsCache = null;
-function getAttrAll() {
-  const now = Date.now();
-  if (attrAllCache && now - attrAllCache.at < 300000) return attrAllCache.a;
-  // periodStartMs = 0: the *Period buckets equal the all-time ones, so the
-  // All report can read them (single scan serves both views).
-  const a = attributeUsage(0, now, 0);
-  attrAllCache = { at: now, a };
+async function buildAttrBundle(now) {
+  const a = await attributeUsage(0, now, Object.values(periodStartsFor(now)));
+  a.byPeriodStart = periodStartsFor(now);
   return a;
 }
 
-// Period-scoped attribution (same 300s TTL, one cache slot per period start).
-// Report panels slice this instead of the all-time buckets so every row and
-// the summary total describe the SAME period.
-const attrPeriodCache = new Map();
-function getAttrPeriod(startMs) {
-  const now = Date.now();
-  const hit = attrPeriodCache.get(startMs);
-  if (hit && now - hit.at < 300000) return hit.a;
-  const a = attributeUsage(0, now, startMs);
-  attrPeriodCache.set(startMs, { at: now, a });
-  if (attrPeriodCache.size > 6) {
-    for (const [k, v] of attrPeriodCache) if (now - v.at >= 300000) attrPeriodCache.delete(k);
+// ---- on-disk bundle cache ---------------------------------------------
+// Scanning the live DB costs 5–26s (WAL + concurrent opencode writes), so the
+// computed bundle is persisted and loaded on startup; a stale bundle still
+// serves every request while a fresh one is rebuilt in the background.
+const BUNDLE_FILE = path.join(__dirname, '.attr-bundle.json');
+const BUNDLE_SAVE_MS = 60000; // don't hammer the disk while chatting
+// Cache is bound to the exact database it was computed from, so pointing
+// OPENCODE_DATA at another DB (tests, a restored copy) never reuses it.
+function dbFingerprint() {
+  try {
+    const st = fs.statSync(BACKUP_SRC);
+    return `${BACKUP_SRC}|${st.size}|${Math.round(st.mtimeMs)}`;
+  } catch (_) { return BACKUP_SRC; }
+}
+function serializeBundle(a) {
+  const setToArr = (obj) => {
+    for (const k of Object.keys(obj)) if (obj[k] && obj[k].sessions) obj[k].sessions = [...obj[k].sessions];
+    return obj;
+  };
+  const days = {};
+  for (const [k, v] of Object.entries(a.perDay)) days[k] = { ...v, dateMs: +v.date, date: undefined, sessions: [...v.sessions] };
+  const periods = {};
+  for (const [s, sl] of a.periods) periods[s] = {
+    ...sl,
+    perModelPeriod: setToArr(sl.perModelPeriod),
+    perAgentPeriod: setToArr(sl.perAgentPeriod),
+  };
+  return JSON.stringify({
+    v: 2, builtAt: a.builtAt, db: dbFingerprint(), byPeriodStart: a.byPeriodStart,
+    perDay: days,
+    perModel: setToArr(a.perModel), perAgent: setToArr(a.perAgent),
+    perSession: a.perSession, totals: a.totals, periods,
+    perModelPeriod: setToArr(a.perModelPeriod), perAgentPeriod: setToArr(a.perAgentPeriod),
+    perAgentModelPeriod: a.perAgentModelPeriod, perSessionPeriod: a.perSessionPeriod,
+    perSessionModelPeriod: a.perSessionModelPeriod,
+    msgAgg: a.msgAgg, msgAgentAgg: a.msgAgentAgg,
+  });
+}
+function reviveBundle(o) {
+  const fixDays = (d) => {
+    const out = {};
+    for (const [k, v] of Object.entries(d)) out[k] = { ...v, date: new Date(v.dateMs), dateMs: undefined, sessions: new Set(v.sessions) };
+    return out;
+  };
+  const fixSets = (obj) => {
+    for (const k of Object.keys(obj || {})) if (obj[k] && Array.isArray(obj[k].sessions)) obj[k].sessions = new Set(obj[k].sessions);
+    return obj || {};
+  };
+  const periods = new Map();
+  for (const [s, sl] of Object.entries(o.periods || {})) {
+    periods.set(+s, { ...sl, perDay: fixDays(o.perDay), perModelPeriod: fixSets(sl.perModelPeriod), perAgentPeriod: fixSets(sl.perAgentPeriod) });
   }
+  const a = {
+    ...o,
+    perDay: fixDays(o.perDay),
+    perModel: fixSets(o.perModel), perAgent: fixSets(o.perAgent),
+    perModelPeriod: fixSets(o.perModelPeriod), perAgentPeriod: fixSets(o.perAgentPeriod),
+    periods,
+  };
   return a;
 }
-
+function saveBundleCache(a) {
+  try { fs.writeFileSync(BUNDLE_FILE, serializeBundle(a)); } catch (_) {}
+}
+function loadBundleCache() {
+  try {
+    const raw = fs.readFileSync(BUNDLE_FILE, 'utf8');
+    const o = JSON.parse(raw);
+    if (o && o.v === 2 && o.db === dbFingerprint() && o.periods && Object.keys(o.periods).length) {
+      console.log(`attr bundle loaded from cache (built ${Math.round((Date.now() - o.builtAt) / 60000)} min ago)`);
+      return { at: o.builtAt, a: reviveBundle(o) };
+    }
+  } catch (_) {}
+  return null;
+}
+function getAttrAll() {
+  if (!attrAllCache) refreshAttrBundle();
+  return attrAllCache ? attrAllCache.a : EMPTY_ATTR;
+}
+function getAttrPeriod(startMs) {
+  if (!attrAllCache) refreshAttrBundle();
+  if (!attrAllCache) return EMPTY_ATTR;
+  return attrAllCache.a.periods.get(startMs) || attrAllCache.a;
+}
+function refreshAttrBundle() {
+  if (attrBundlePending) return attrAllCache ? attrAllCache.a : null;
+  const now = Date.now();
+  if (attrAllCache && now - attrAllCache.at < ATTR_TTL) return attrAllCache.a;
+  attrBundlePending = true;
+  buildAttrBundle(now).then((a) => {
+    a.builtAt = now;
+    attrAllCache = { at: now, a };
+    attrBundlePending = false;
+    console.log(`attr bundle rebuilt in ${Date.now() - now}ms`);
+    if (now - (attrLastSave || 0) > BUNDLE_SAVE_MS) { attrLastSave = now; saveBundleCache(a); }
+  }).catch((e) => {
+    attrBundlePending = false;
+    console.error('attr bundle failed:', e.message);
+  });
+  return attrAllCache ? attrAllCache.a : null;
+}
 function computeMedian(arr) {
   if (!arr.length) return 0;
   const sorted = arr.slice().sort((a, b) => a - b);
@@ -523,7 +691,7 @@ function getStatsFromDb(days) {
 
   // V2: tool parts are embedded in session_message content (part table froze
   // at the upgrade and its migrated rows were rebuilt into content, so
-  // querying all of part would double count — only parts of messages that
+  // querying all of part would double count ??only parts of messages that
   // were never migrated are added from `part`). Cached (see toolsCache):
   // verification accepts api<=expected, so staleness never fails checks.
   if (!toolsCache || now - toolsCache.at > TOOLS_TTL || toolsCache.embedded !== schema.embeddedTools || toolsCache.startMs !== startMs) {
@@ -583,8 +751,7 @@ function getStatsFromDb(days) {
     .sort((a, b) => b.cost - a.cost);
 
   // Savings estimate: market value of all-time usage at catalog paid rates,
-  // priced per MESSAGE model (residual falls back to the session's model) —
-  // the same basis as the report providers table. Rows the catalog cannot
+  // priced per MESSAGE model (residual falls back to the session's model) ??  // the same basis as the report providers table. Rows the catalog cannot
   // price are EXCLUDED and disclosed (unpricedTokens/unpricedRows) instead of
   // being valued at a made-up rate; proxyShare is how much of the priced
   // total comes from cross-provider estimates.
@@ -767,8 +934,8 @@ function buildReportFromDb(days) {
   // sessions, market/saved) is sliced to THIS period, so the tables sum to the
   // card. The all-time buckets (perDay) are still used for the summary totals
   // and stay identical to the trend chart for the same period.
-  const a = days === -1 ? getAttrAll() : getAttrPeriod(startMs);
-  const aNow = days === -1 ? attrAllCache.at : attrPeriodCache.get(startMs).at; // snapshot time of `a`
+  const a = getAttrPeriod(startMs);
+  const aNow = attrAllCache.at; // snapshot time of the shared bundle
   // Message-level stats per session within the period (period speed + active
   // time). One GROUP BY over the merged message view, mapped onto the same
   // session-meta buckets as tokens so row sets stay identical.
@@ -776,19 +943,17 @@ function buildReportFromDb(days) {
   // subagent/fork sessions are written with time_updated == time_created
   // (same millisecond), which would report ~0 wall for hours of real work.
   // Query the merged message view for the period span per session.
+// Speed / active / wall come from the shared attribution bundle (the same
+  // message pass that produced these period buckets), so switching scope costs
+  // no SQL at all. Wall uses the MESSAGE clock: subagent/fork sessions are
+  // written with time_updated == time_created, which would read as ~0 wall.
+  const msgAgg = a.msgAgg || {};
+  const msgAgentAgg = a.msgAgentAgg || {};
   const wallMs = {};
-  for (const m of (dbQuery(`SELECT session_id AS sid, MIN(time_created) AS t0, MAX(COALESCE(CAST(json_extract(data,'$.time.completed') AS INTEGER), time_updated)) AS t1 FROM ${schema.message} WHERE time_created >= ${startMs} AND time_created < ${aNow} GROUP BY session_id`) || [])) {
-    wallMs[m.sid] = Math.max(0, (+m.t1 || 0) - (+m.t0 || 0));
-  }
-  const msgAgg = {};
-  for (const m of (dbQuery(`SELECT session_id AS sid, COUNT(*) AS n, COALESCE(SUM(CASE WHEN CAST(json_extract(data, '$.tokens.output') AS INTEGER) > 0 AND CAST(json_extract(data, '$.time.completed') AS INTEGER) > CAST(json_extract(data, '$.time.created') AS INTEGER) THEN CAST(json_extract(data, '$.tokens.output') AS INTEGER) ELSE 0 END), 0) AS o, COALESCE(SUM(CASE WHEN CAST(json_extract(data,'$.tokens.output') AS INTEGER) > 0 AND CAST(json_extract(data,'$.time.completed') AS INTEGER) > CAST(json_extract(data,'$.time.created') AS INTEGER) THEN CAST(json_extract(data,'$.tokens.reasoning') AS INTEGER) ELSE 0 END), 0) AS rq, COALESCE(SUM(CASE WHEN CAST(json_extract(data, '$.tokens.output') AS INTEGER) > 0 AND CAST(json_extract(data, '$.time.completed') AS INTEGER) > CAST(json_extract(data, '$.time.created') AS INTEGER) THEN CAST(json_extract(data, '$.time.completed') AS INTEGER) - CAST(json_extract(data, '$.time.created') AS INTEGER) ELSE 0 END), 0) AS ms FROM ${schema.message} WHERE time_created >= ${startMs} AND time_created < ${aNow} GROUP BY sid`) || [])) {
-    msgAgg[m.sid] = m;
-  }
-  // Same aggregates per agent — the message layer can name agents that session
-  // meta lacks (compaction/plan), so agent speed/active come from messages.
-  const msgAgentAgg = {};
-  for (const m of (dbQuery(`SELECT COALESCE(json_extract(data,'$.agent'),'unknown') AS agent, COALESCE(SUM(CASE WHEN CAST(json_extract(data,'$.tokens.output') AS INTEGER) > 0 AND CAST(json_extract(data,'$.time.completed') AS INTEGER) > CAST(json_extract(data,'$.time.created') AS INTEGER) THEN CAST(json_extract(data,'$.tokens.output') AS INTEGER) ELSE 0 END),0) AS o, COALESCE(SUM(CASE WHEN CAST(json_extract(data,'$.tokens.output') AS INTEGER) > 0 AND CAST(json_extract(data,'$.time.completed') AS INTEGER) > CAST(json_extract(data,'$.time.created') AS INTEGER) THEN CAST(json_extract(data,'$.time.completed') AS INTEGER) - CAST(json_extract(data,'$.time.created') AS INTEGER) ELSE 0 END),0) AS ms FROM ${schema.message} WHERE time_created >= ${startMs} AND time_created < ${aNow} GROUP BY COALESCE(json_extract(data,'$.agent'),'unknown')`) || [])) {
-    msgAgentAgg[m.agent] = { o: m.o, ms: m.ms };
+  for (const sid of Object.keys(msgAgg)) {
+    const m = msgAgg[sid];
+    const w0 = m.w0 === Infinity ? 0 : m.w0;
+    wallMs[sid] = Math.max(0, (+m.w1 || 0) - w0);
   }
   const periodDays = {};
   for (const [key, val] of Object.entries(a.perDay)) {
@@ -806,7 +971,7 @@ function buildReportFromDb(days) {
   }
   const t = periodTotals;
   const activeDays = pdVals.length || 1;
-  // Avg/median over the PERIOD's token-bearing sessions — period buckets, so
+  // Avg/median over the PERIOD's token-bearing sessions ??period buckets, so
   // Daily/Weekly differ and the value matches the card and the tables.
   const periodSessionIds = [...periodTotals.sessions];
   const sessVals = periodSessionIds
@@ -931,7 +1096,7 @@ function buildReportFromDb(days) {
     var pSessionRows = [];
   }
 
-  // Period market = Σ priced provider rows (already period-scoped); saved = Σ
+  // Period market = 峉 priced provider rows (already period-scoped); saved = 峉
   // provider saved so it can never mix a period cost with a lifetime market.
   // Unpriced rows are disclosed, not valued.
   const sumMkt = (rows) => rows.reduce((s, r) => s + (r.market || 0), 0);
@@ -969,8 +1134,14 @@ function refreshReport(days) {
         const r = buildReportFromDb(days);
         if (r && r.stats && r.stats.ok) {
           reportCache[key] = r;
+        } else {
+          console.error(`report build failed for days=${days}`);
         }
-      } catch (_) {} finally {
+      } catch (e) {
+        // Never swallow silently: a broken report must not look like "still
+        // generating" forever while the frontend retries.
+        console.error(`report build threw for days=${days}:`, e && e.stack ? e.stack.split('\n')[0] : e);
+      } finally {
         delete reportBusy[key];
       }
     });
@@ -1154,9 +1325,32 @@ function tryListen(port, maxPort) {
     const actualPort = await tryListen(PORT, PORT + 5);
     setInterval(refresh, REFRESH_MS);
     setInterval(refreshModels, 60000);
+    // Serve from the persisted bundle immediately (startup is instant even when a
+    // live scan would take 5–26s), then refresh in the background when stale.
+    attrBundlePending = true;
+    const cached = loadBundleCache();
+    attrAllCache = cached || null;
+    if (cached) refreshAttrBundle();
+    setInterval(refreshAttrBundle, 60000);
     await refresh();
     await refreshModels();
-    for (const d of [1, 7, 30]) {
+    if (!cached) {
+      // Cold start (no cache file yet): one blocking scan, then persist it so
+      // every later start is instant.
+      attrBundlePending = true;
+      const warmT0 = Date.now();
+      attrAllCache = { at: warmT0, a: await buildAttrBundle(Date.now()) };
+      attrAllCache.a.builtAt = warmT0;
+      attrBundlePending = false;
+      attrLastSave = warmT0;
+      saveBundleCache(attrAllCache.a);
+      console.log(`attr bundle warm in ${Date.now() - warmT0}ms (cached to disk)`);
+      await refresh();
+      await refreshModels();
+    }
+    // Today's report eagerly (the common first view). Other periods build on
+    // demand in the background via refreshReport stale-while-revalidate.
+    for (const d of [1]) {
       try {
         const r = buildReportFromDb(d);
         if (r && r.stats && r.stats.ok) reportCache[String(d)] = r;
@@ -1168,7 +1362,6 @@ function tryListen(port, maxPort) {
         if (t) trendCache[String(d)] = t;
       } catch (_) {}
     }
-    // Defer backup to avoid heavy disk I/O during startup
     // (Windows may kill process for excessive I/O on large DB files).
     setTimeout(() => {
       autoBackupIfDue().catch((_) => {});
