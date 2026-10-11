@@ -155,12 +155,21 @@ chk('headline tokens split into in/out/reasoning/cache',
 // every turn and would otherwise inflate it by ~30x).
 chk('headline excludes cache re-reads', (() => {
   const c = (r.stats && r.stats.cost) || {};
-  const parse = (s) => { const m = String(s).trim().match(/^([\d.]+)\s*([KMB])?$/i); if (!m) return NaN; const mul = { k: 1e3, m: 1e6, b: 1e9 }[(m[2] || '').toLowerCase()] || 1; return parseFloat(m[1]) * mul; };
+  const parse = (s) => { const m = String(s).trim().match(/([\d.]+)\s*([KMB])?$/i); if (!m) return NaN; const mul = { k: 1e3, m: 1e6, b: 1e9 }[(m[2] || '').toLowerCase()] || 1; return parseFloat(m[1]) * mul; };
   const shown = parse(textOf('hl-tokens'));
   const core = (c.input || 0) + (c.output || 0) + (c.reasoning || 0);
   const withCache = core + (c.cacheRead || 0);
   const near = (a, b) => Number.isFinite(a) && Math.abs(a - b) <= Math.max(b * 0.03, 1000);
   return near(shown, core) && !near(shown, withCache);
+})());
+// Both readings are on screen: headline = new tokens, sub-line = incl. cache.
+chk('headline shows inclusive total too', (() => {
+  const c = (r.stats && r.stats.cost) || {};
+  const parse = (s) => { const m = String(s).match(/([\d.]+)\s*([KMB])?$/i); if (!m) return NaN; const mul = { k: 1e3, m: 1e6, b: 1e9 }[(m[2] || '').toLowerCase()] || 1; return parseFloat(m[1]) * mul; };
+  const incl = parse(textOf('hl-tokens-incl'));
+  const core = (c.input || 0) + (c.output || 0) + (c.reasoning || 0);
+  const full = core + (c.cacheRead || 0);
+  return Number.isFinite(incl) && Math.abs(incl - full) <= Math.max(full * 0.03, 1000);
 })());
 chk('cache label says re-reads', /re-read/i.test(STRINGS.en.tCache) && /re-read|重讀/i.test(STRINGS['zh-TW'].tCache));
 chk('headline cost / market / saved rendered as $',

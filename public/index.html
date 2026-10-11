@@ -50,6 +50,7 @@
   .card .subs { display: flex; flex-wrap: wrap; gap: 4px 12px; margin-top: 8px; font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
   .card .subs b { color: var(--text); font-weight: 600; }
   .subs .k-in { color: var(--in); } .subs .k-out { color: var(--out); }
+  .subs .k-incl { flex-basis: 100%; font-variant-numeric: tabular-nums; }
   .subs .k-reasoning { color: var(--tool); } .subs .k-cache { color: var(--cache); }
   .subs .warn { color: var(--warn); cursor: pointer; border-bottom: 1px dashed var(--warn); }
   .subs .warn:hover { color: #f0c674; }
@@ -163,6 +164,7 @@
       <div class="l" data-i18n="tokens">Tokens</div>
       <div class="v" id="hl-tokens">&#8212;</div>
       <div class="subs">
+        <span class="k-incl" id="hl-tokens-incl">&#8212;</span>
         <span class="k-in"><span data-i18n="tIn">in</span> <b id="hl-in">&#8212;</b></span>
         <span class="k-out"><span data-i18n="tOut">out</span> <b id="hl-out">&#8212;</b></span>
         <span class="k-reasoning"><span data-i18n="tReasoning">reasoning</span> <b id="hl-reasoning">&#8212;</b></span>
@@ -306,7 +308,7 @@ const STRINGS = {
     headline: 'HEADLINE', trend: 'TREND', breakdown: 'BREAKDOWN', toolUsage: 'TOOLS',
     pricingBasis: 'PRICING BASIS', rawText: 'RAW TEXT',
     rawHint: 'Plain-text statement, same numbers as the tables above.',
-    tokens: 'Tokens (excl. cache re-reads)', tIn: 'in', tOut: 'out', tReasoning: 'reasoning', tCache: 'cache re-reads',
+    tokens: 'Tokens', tIn: 'in', tOut: 'out', tReasoning: 'reasoning', tCache: 'cache re-reads', tokensInclCache: 'incl. cache re-reads: {v}',
     totalCost: 'Total Cost', marketValue: 'Market Value', saved: 'Saved',
     costShare: 'actual paid', atCatalog: 'same usage at catalog list prices',
     savedOf: '{pct}% of market value',
@@ -352,7 +354,7 @@ const STRINGS = {
     headline: '重點指標', trend: '趨勢', breakdown: '明細', toolUsage: '工具',
     pricingBasis: '定價依據', rawText: '原始文字',
     rawHint: '純文字報表，數字與上方表格一致。',
-    tokens: 'Tokens（不含快取重讀）', tIn: '輸入', tOut: '輸出', tReasoning: '推理', tCache: '快取重讀',
+    tokens: 'Tokens', tIn: '輸入', tOut: '輸出', tReasoning: '推理', tCache: '快取重讀', tokensInclCache: '含快取重讀：{v}',
     totalCost: '總費用', marketValue: '市價', saved: '已節省',
     costShare: '實際付費', atCatalog: '同等用量依牌價換算',
     savedOf: '占市價 {pct}%',
@@ -530,9 +532,11 @@ function renderReport(rep) {
   const o = (rep.stats && rep.stats.overview) || {};
   const cacheAll = (c.cacheRead || 0) + (c.cacheWrite || 0);
 
-  // Cache reads are context RE-reads (the same prefix counted again on every
-  // turn), so they must not inflate the headline token count.
-  $('hl-tokens').textContent = fmt((c.input || 0) + (c.output || 0) + (c.reasoning || 0));
+  // Cache reads are context RE-reads (the same prefix counted again every turn),
+  // so the headline shows new tokens and the inclusive total sits below it.
+  const coreTok = (c.input || 0) + (c.output || 0) + (c.reasoning || 0);
+  $('hl-tokens').textContent = fmt(coreTok);
+  $('hl-tokens-incl').textContent = fmtLang('tokensInclCache', { v: fmt(coreTok + cacheAll) });
   $('hl-in').textContent = fmt(c.input);
   $('hl-out').textContent = fmt(c.output);
   $('hl-reasoning').textContent = fmt(c.reasoning);
