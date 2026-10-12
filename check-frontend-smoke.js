@@ -37,9 +37,22 @@ const getReport = (days) => {
   }
   return get(url);
 };
+const getStats = () => {
+  const url = 'http://127.0.0.1:4868/api/stats?days=7';
+  for (let i = 0; i < 120; i++) {
+    const j = get(url);
+    // The dashboard serves its persisted bundle at startup, but a server that
+    // just booted with no cache (or one mid-rebuild) answers with zeros for a
+    // few seconds. Capturing that would make every DOM assertion compare
+    // against an empty payload.
+    if (j.ok && j.data && j.data.cost && j.data.cost.input > 0 && (j.data.tools || []).length) return j;
+    sleepSync(500);
+  }
+  return get(url);
+};
 let stats, rep, repMtd;
 try {
-  stats = get('http://127.0.0.1:4868/api/stats?days=7');
+  stats = getStats();
   // The page boots on the 7-day scope, so assertions about the RENDERED DOM
   // must compare against the 7-day report. Comparing against "today" used to
   // pass by luck and then failed on any DB where today has no usage yet.
@@ -185,25 +198,22 @@ chk('window.__setScope / __renderAll / __lastReport exposed',
 chk('default scope tag on headline', textOf('tag-headline') === STRINGS.en.scopeSuffix['7']);
 chk('headline tokens split into in/out/reasoning/cache',
   ['hl-tokens', 'hl-in', 'hl-out', 'hl-reasoning', 'hl-cache'].every((id) => textOf(id) && textOf(id) !== EM));
-// The headline must EXCLUDE cache re-reads (they re-count the same context
-// every turn and would otherwise inflate it by ~30x).
-chk('headline excludes cache re-reads', (() => {
+// The headline is the ALL-IN total (cache re-reads included — every token the
+// models processed), with the new-token subtotal underneath so the re-read
+// share is never hidden.
+const parseTok = (s) => { const m = String(s).match(/([\d.]+)\s*([KMB])?$/i); if (!m) return NaN; const mul = { k: 1e3, m: 1e6, b: 1e9 }[(m[2] || '').toLowerCase()] || 1; return parseFloat(m[1]) * mul; };
+chk('headline is the all-in token total', (() => {
   const c = (r.stats && r.stats.cost) || {};
-  const parse = (s) => { const m = String(s).trim().match(/([\d.]+)\s*([KMB])?$/i); if (!m) return NaN; const mul = { k: 1e3, m: 1e6, b: 1e9 }[(m[2] || '').toLowerCase()] || 1; return parseFloat(m[1]) * mul; };
-  const shown = parse(textOf('hl-tokens'));
-  const core = (c.input || 0) + (c.output || 0) + (c.reasoning || 0);
-  const withCache = core + (c.cacheRead || 0);
-  const near = (a, b) => Number.isFinite(a) && Math.abs(a - b) <= Math.max(b * 0.03, 1000);
-  return near(shown, core) && !near(shown, withCache);
-})());
-// Both readings are on screen: headline = new tokens, sub-line = incl. cache.
-chk('headline shows inclusive total too', (() => {
-  const c = (r.stats && r.stats.cost) || {};
-  const parse = (s) => { const m = String(s).match(/([\d.]+)\s*([KMB])?$/i); if (!m) return NaN; const mul = { k: 1e3, m: 1e6, b: 1e9 }[(m[2] || '').toLowerCase()] || 1; return parseFloat(m[1]) * mul; };
-  const incl = parse(textOf('hl-tokens-incl'));
   const core = (c.input || 0) + (c.output || 0) + (c.reasoning || 0);
   const full = core + (c.cacheRead || 0);
-  return Number.isFinite(incl) && Math.abs(incl - full) <= Math.max(full * 0.03, 1000);
+  const near = (a, b) => Number.isFinite(a) && Math.abs(a - b) <= Math.max(b * 0.03, 1000);
+  return near(parseTok(textOf('hl-tokens')), full) && !near(parseTok(textOf('hl-tokens')), core);
+})());
+chk('headline also shows the new-token subtotal', (() => {
+  const c = (r.stats && r.stats.cost) || {};
+  const core = (c.input || 0) + (c.output || 0) + (c.reasoning || 0);
+  const sub = parseTok(textOf('hl-tokens-incl'));
+  return Number.isFinite(sub) && Math.abs(sub - core) <= Math.max(core * 0.03, 1000);
 })());
 chk('cache label says re-reads', /re-read/i.test(STRINGS.en.tCache) && /re-read|重讀/i.test(STRINGS['zh-TW'].tCache));
 chk('headline cost / market / saved rendered as $',
