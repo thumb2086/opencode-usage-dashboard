@@ -585,13 +585,13 @@ async function buildAttrBundle(now) {
 // serves every request while a fresh one is rebuilt in the background.
 const BUNDLE_FILE = path.join(__dirname, '.attr-bundle.json');
 const BUNDLE_SAVE_MS = 60000; // don't hammer the disk while chatting
-// Cache is bound to the exact database it was computed from, so pointing
+// Cache is bound to the DATABASE PATH it was computed from, so pointing
 // OPENCODE_DATA at another DB (tests, a restored copy) never reuses it.
+// Deliberately NOT keyed on size/mtime: the live DB grows on every message,
+// so a stat-based fingerprint invalidated the cache on every restart and
+// silently turned the instant cold start back into a full 6-7s rebuild.
 function dbFingerprint() {
-  try {
-    const st = fs.statSync(BACKUP_SRC);
-    return `${BACKUP_SRC}|${st.size}|${Math.round(st.mtimeMs)}`;
-  } catch (_) { return BACKUP_SRC; }
+  return BACKUP_SRC;
 }
 function serializeBundle(a, tools) {
   // MUST NOT mutate: the caller serializes the LIVE bundle, and swapping a

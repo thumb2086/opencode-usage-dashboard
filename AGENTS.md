@@ -32,6 +32,7 @@ The message table is ~1GB of JSON; scanning it with `json_extract` costs **43s**
 Rules that keep it fast:
 
 - **Nothing on the request path may run a full scan.** `toolCountsFor()` returns the worker/cached counts while a worker round is in flight; only if the worker is unavailable does it fall back to an inline scan.
+- **The bundle cache is keyed on the DB PATH only.** Keying it on size/mtime looked safer but the live DB grows on every message, so the fingerprint changed constantly and the "instant" cold start silently degraded back to a 6–7s rebuild on a busy machine.
 - **Reports refuse to build without a bundle** (`refreshReport` returns `ready:false`), otherwise an all-zero report sits in the 10-minute cache and blanks the dashboard.
 - The bundle is persisted with its tool counts, so a cold start paints complete numbers before the first worker round lands. `settleBundle` repaints and prewarms the default scope report.
 - The frontend `warmOtherScopes()` fetches the scopes the user is NOT looking at, on idle, so a scope click is an in-memory swap.
