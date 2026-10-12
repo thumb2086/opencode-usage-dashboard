@@ -311,13 +311,13 @@ const STRINGS = {
     tokens: 'Tokens', tIn: 'in', tOut: 'out', tReasoning: 'reasoning', tCache: 'cache re-reads', tokensInclCache: 'incl. cache re-reads: {v}',
     totalCost: 'Total Cost', marketValue: 'Market Value', saved: 'Saved',
     costShare: 'actual paid', atCatalog: 'same usage at catalog list prices',
-    savedOf: '{pct}% of market value',
+    savedOf: '{pct} of market value',
     sessionsLabel: 'Sessions', messagesLabel: 'Messages', daysLabel: 'Days',
     avgCostDay: 'Avg cost / day', avgTokensSession: 'Avg tokens / session', medianTokensSession: 'Median tokens / session',
     activeLabel: 'active',
     pricesAsOf: 'prices as of {d}',
     unpricedModels: '{n} models unpriced ({t} tokens not valued)',
-    proxyShare: '{pct}% of market value is proxy estimate',
+    proxyShare: '{pct} of market value is proxy estimate',
     caveat: 'V1+V2 merged · per-message token authority · session residual spread across the session\'s days',
     tabModels: 'Models', tabAgents: 'Agents', tabSessions: 'Sessions',
     thName: 'Name', thShare: 'Share', thSessions: 'Sessions', thMsgs: 'Msgs',
@@ -357,13 +357,13 @@ const STRINGS = {
     tokens: 'Tokens', tIn: '輸入', tOut: '輸出', tReasoning: '推理', tCache: '快取重讀', tokensInclCache: '含快取重讀：{v}',
     totalCost: '總費用', marketValue: '市價', saved: '已節省',
     costShare: '實際付費', atCatalog: '同等用量依牌價換算',
-    savedOf: '占市價 {pct}%',
+    savedOf: '占市價 {pct}',
     sessionsLabel: '工作階段', messagesLabel: '訊息數', daysLabel: '天數',
     avgCostDay: '平均費用 / 天', avgTokensSession: '平均 tokens / 場', medianTokensSession: '中位數 tokens / 場',
     activeLabel: '實際執行',
     pricesAsOf: '牌價日期 {d}',
     unpricedModels: '{n} 個模型查無牌價（{t} tokens 未計價）',
-    proxyShare: '市價中有 {pct}% 屬借價代估',
+    proxyShare: '市價中有 {pct} 屬借價代估',
     caveat: 'V1+V2 資料合併 · 以單則訊息 token 為準 · 場次餘額依該場涵蓋的天數分攤',
     tabModels: '模型', tabAgents: '代理', tabSessions: '場次',
     thName: '名稱', thShare: '占比', thSessions: '場次', thMsgs: '訊息',
@@ -856,6 +856,28 @@ async function loadReport(days) {
   }
 }
 
+// Warm the scopes the user is NOT looking at, while they read this one.
+// Every scope is served from the shared attribution bundle, so this is pure
+// network + one server-side build per scope: it turns the first click on
+// Today/All into an instant in-memory swap instead of a ~200ms wait.
+// Renders nothing — the visible scope must not be repainted by a warm fetch.
+let scopeWarmStarted = false;
+function warmOtherScopes() {
+  if (scopeWarmStarted) return;
+  scopeWarmStarted = true;
+  const idle = window.requestIdleCallback || ((fn) => setTimeout(fn, 800));
+  idle(async () => {
+    for (const d of SCOPE_DAYS) {
+      if (reportCache[d]) continue;
+      try {
+        const r = await fetch('/api/report?days=' + d + '&_=' + Date.now(), { cache: 'no-store' });
+        const j = await r.json();
+        if (j && j.ready && j.report) reportCache[d] = j.report;
+      } catch (_) {}
+    }
+  });
+}
+
 // ---- global scope switch ----------------------------------------------
 // Always repaints every section's scope tag first (cache-backed, instant),
 // then refreshes from the API only for a scope we have not seen yet.
@@ -872,11 +894,13 @@ async function setScope(days) {
     window.__lastReport = cached;
     applyScopeTags();
     renderAll();
+    warmOtherScopes();
     return cached;
   }
   applyScopeTags();
   $('rawText').textContent = '⏳ ' + t('generating') + '…';
   const [rep] = await Promise.all([loadReport(days), poll()]);
+  warmOtherScopes();
   return rep;
 }
 

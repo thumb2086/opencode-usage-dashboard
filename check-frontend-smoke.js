@@ -25,16 +25,33 @@ if (!m) { console.log('FAIL no script block'); process.exit(1); }
 // keep-alive sockets; avoids a Node/Win32 libuv teardown race on exit).
 const { execFileSync } = require('child_process');
 const get = (u) => JSON.parse(execFileSync('curl.exe', ['-s', u], { encoding: 'utf8', timeout: 120000 }));
-let stats, rep;
+const sleepSync = (ms) => { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms); };
+// Reports build lazily on the server (first request returns ready:false), so
+// poll instead of assuming the cache is warm.
+const getReport = (days) => {
+  const url = 'http://127.0.0.1:4868/api/report?days=' + days;
+  for (let i = 0; i < 120; i++) {
+    const j = get(url);
+    if (j.ready && j.report) return j;
+    sleepSync(500);
+  }
+  return get(url);
+};
+let stats, rep, repMtd;
 try {
   stats = get('http://127.0.0.1:4868/api/stats?days=7');
-  rep = get('http://127.0.0.1:4868/api/report?days=1');
+  // The page boots on the 7-day scope, so assertions about the RENDERED DOM
+  // must compare against the 7-day report. Comparing against "today" used to
+  // pass by luck and then failed on any DB where today has no usage yet.
+  rep = getReport(7);
+  repMtd = getReport(30);
 } catch (e) {
   console.log('FAIL api fetch: ' + e.message);
   process.exit(1);
 }
 if (!stats.ok || !rep.ready || !rep.report) { console.log('FAIL api not ready'); process.exit(1); }
 const r = rep.report;
+const rMtd = repMtd.report;
 
 let fails = 0;
 const chk = (name, cond) => {
@@ -128,9 +145,26 @@ const documentStub = {
 };
 const ls = { getItem: () => null, setItem: () => {} };
 const fetches = [];
+// Scope-aware: the page's real script asks for /api/report?days=N, and a stub
+// that always returned one scope made every "repainted for new scope"
+// assertion compare the DOM against the wrong dataset. Every scope the page
+// can visit is pre-fetched BEFORE the script runs, so no stubbed fetch ever
+// blocks on a server-side report build (which would starve the page's render).
+const reportFor = {};
+for (const d of [7, 1, 30, -1]) reportFor[d] = getReport(d);
+const reportForDays = (days) => {
+  const k = Number(days);
+  if (!reportFor[k]) reportFor[k] = getReport(Number.isFinite(k) ? k : 7);
+  return reportFor[k];
+};
 const stubFetch = async (url) => {
   fetches.push(String(url));
-  return { json: async () => (String(url).includes('/api/report') ? rep : stats) };
+  const u = String(url);
+  if (u.includes('/api/report')) {
+    const mm = u.match(/days=(-?\d+)/);
+    return { json: async () => reportForDays(mm ? parseInt(mm[1], 10) : 7) };
+  }
+  return { json: async () => stats };
 };
 const win = {};
 const noop = () => 0;
@@ -268,12 +302,19 @@ chk('scope=Today relabels headline/breakdown/pricing/raw',
 chk('scope=Today relabels trend with bucket count', SECT('trend') === STRINGS.en.trendScope.replace('{n}', '1'));
 chk('scope=Today keeps tools tag carrying the scope', SECT('tools').indexOf(STRINGS.en.scopeSuffix['1']) === 0);
 chk('scopeNow shows the active scope', textOf('scopeNow') === STRINGS.en.scopeSuffix['1']);
+chk('first visit to a scope does fetch', fetches.length > beforeFetches);
+
+// Data-bearing repaint assertions use month-to-date, not "today": a fresh day
+// legitimately has no usage yet, which would make row-count checks vacuous.
+await win.__setScope(30);
+await tick(12);
+chk('scope=Month-to-date relabels every section',
+  ['headline', 'breakdown', 'pricing', 'raw'].every((k) => SECT(k) === STRINGS.en.scopeSuffix['30']));
 chk('headline repainted for new scope', textOf('hl-tokens') && textOf('hl-tokens') !== EM && textOf('hl-market').includes('$'));
-chk('breakdown repainted for new scope', rowsIn('bd-models').length === r.providers.length);
-chk('pricing repainted for new scope', rowsIn('pricing-rows').length === r.providers.length);
+chk('breakdown repainted for new scope', rowsIn('bd-models').length === rMtd.providers.length && rMtd.providers.length > 0);
+chk('pricing repainted for new scope', rowsIn('pricing-rows').length === rMtd.providers.length);
 chk('raw text repainted for new scope', textOf('rawText').includes('OPENCODE USAGE STATEMENT'));
 chk('trend repainted for new scope', htmlOf('trend-tokens').includes('title='));
-chk('first visit to a scope does fetch', fetches.length > beforeFetches);
 
 await win.__setScope(-1);
 await tick(12);

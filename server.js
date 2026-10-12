@@ -4,6 +4,7 @@ const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const zlib = require('zlib');
+const { Worker } = require('worker_threads');
 const { pipeline } = require('stream');
 const { promisify } = require('util');
 const pipelineAsync = promisify(pipeline);
@@ -333,9 +334,13 @@ function marketOf(tok, provider, model) {
 // message count, output, reasoning, active ms, wall span on the MESSAGE clock)
 // and msgAgentAgg, so reports need no extra queries.
 const ATTR_TTL = 300000;
-// Tool counts change slowly but the embedded-content scan costs ~1.5s on a
-// large DB; cache it so the 15s refresh stays cheap. Keyed on schema+window.
+// Tool counts change slowly but the embedded-content scan costs ~2.8s on a
+// 2.7GB live DB, so it is computed by the stats WORKER (see spawnAttrWorker)
+// and only ever READ here. `fromWorker` marks worker-supplied data, which is
+// always as fresh as the last worker round and therefore exempt from TOOLS_TTL.
 let toolsCache = null;
+let attrWorkerActive = false;
+const ATTR_WORKER = path.join(__dirname, 'attr-worker.js');
 const yieldToLoop = () => new Promise((r) => setImmediate(r));
 
 function newTokBucket() {
@@ -346,6 +351,11 @@ function addTok(b, iv, ov, rv, crv, cwv, cv) {
 }
 
 async function attributeUsage(startMs, endMs, periodStartsMs) {
+  // CRITICAL: open the DB (which runs detectSchema) BEFORE any schema.* value
+  // is interpolated into a query. Template literals evaluate left to right, so
+  // a query built before the first getDb() would silently use the V1-only
+  // defaults and drop every V2 row.
+  getDb();
   const starts = (Array.isArray(periodStartsMs) ? periodStartsMs : [periodStartsMs])
     .filter((x) => x != null).sort((a, b) => a - b);
 
@@ -583,10 +593,17 @@ function dbFingerprint() {
     return `${BACKUP_SRC}|${st.size}|${Math.round(st.mtimeMs)}`;
   } catch (_) { return BACKUP_SRC; }
 }
-function serializeBundle(a) {
+function serializeBundle(a, tools) {
+  // MUST NOT mutate: the caller serializes the LIVE bundle, and swapping a
+  // bucket's `sessions` Set for an array in place would break every later
+  // `.sessions.size` read (arrays have no .size).
   const setToArr = (obj) => {
-    for (const k of Object.keys(obj)) if (obj[k] && obj[k].sessions) obj[k].sessions = [...obj[k].sessions];
-    return obj;
+    const out = {};
+    for (const k of Object.keys(obj || {})) {
+      const v = obj[k];
+      out[k] = (v && v.sessions) ? { ...v, sessions: [...v.sessions] } : v;
+    }
+    return out;
   };
   const days = {};
   for (const [k, v] of Object.entries(a.perDay)) days[k] = { ...v, dateMs: +v.date, date: undefined, sessions: [...v.sessions] };
@@ -598,6 +615,7 @@ function serializeBundle(a) {
   };
   return JSON.stringify({
     v: 2, builtAt: a.builtAt, db: dbFingerprint(), byPeriodStart: a.byPeriodStart,
+    tools: tools ? { embedded: tools.embedded, startMs: tools.startMs, counts: tools.counts } : null,
     perDay: days,
     perModel: setToArr(a.perModel), perAgent: setToArr(a.perAgent),
     perSession: a.perSession, totals: a.totals, periods,
@@ -614,8 +632,12 @@ function reviveBundle(o) {
     return out;
   };
   const fixSets = (obj) => {
-    for (const k of Object.keys(obj || {})) if (obj[k] && Array.isArray(obj[k].sessions)) obj[k].sessions = new Set(obj[k].sessions);
-    return obj || {};
+    const out = {};
+    for (const k of Object.keys(obj || {})) {
+      const v = obj[k];
+      out[k] = (v && Array.isArray(v.sessions)) ? { ...v, sessions: new Set(v.sessions) } : v;
+    }
+    return out;
   };
   const periods = new Map();
   for (const [s, sl] of Object.entries(o.periods || {})) {
@@ -630,8 +652,8 @@ function reviveBundle(o) {
   };
   return a;
 }
-function saveBundleCache(a) {
-  try { fs.writeFileSync(BUNDLE_FILE, serializeBundle(a)); } catch (_) {}
+function saveBundleCache(a, tools) {
+  try { fs.writeFileSync(BUNDLE_FILE, serializeBundle(a, tools)); } catch (_) {}
 }
 function loadBundleCache() {
   try {
@@ -639,6 +661,11 @@ function loadBundleCache() {
     const o = JSON.parse(raw);
     if (o && o.v === 2 && o.db === dbFingerprint() && o.periods && Object.keys(o.periods).length) {
       console.log(`attr bundle loaded from cache (built ${Math.round((Date.now() - o.builtAt) / 60000)} min ago)`);
+      // Tool counts ride along so a cold start paints complete numbers before
+      // the first worker round lands.
+      if (o.tools && o.tools.counts) {
+        toolsCache = { at: o.builtAt, embedded: o.tools.embedded, startMs: 0, counts: o.tools.counts, fromWorker: true };
+      }
       return { at: o.builtAt, a: reviveBundle(o) };
     }
   } catch (_) {}
@@ -653,22 +680,133 @@ function getAttrPeriod(startMs) {
   if (!attrAllCache) return EMPTY_ATTR;
   return attrAllCache.a.periods.get(startMs) || attrAllCache.a;
 }
+// Kick a fresh scan. The scan runs in a WORKER THREAD because it is
+// synchronous better-sqlite3 + JSON work: inline it froze the event loop for
+// 3-29s on a contended 2.7GB WAL DB, which is exactly what made cold starts
+// and scope clicks feel slow. The worker posts back the same JSON the disk
+// cache stores, so the swap-in path is identical either way.
 function refreshAttrBundle() {
   if (attrBundlePending) return attrAllCache ? attrAllCache.a : null;
   const now = Date.now();
   if (attrAllCache && now - attrAllCache.at < ATTR_TTL) return attrAllCache.a;
   attrBundlePending = true;
-  buildAttrBundle(now).then((a) => {
-    a.builtAt = now;
-    attrAllCache = { at: now, a };
-    attrBundlePending = false;
-    console.log(`attr bundle rebuilt in ${Date.now() - now}ms`);
-    if (now - (attrLastSave || 0) > BUNDLE_SAVE_MS) { attrLastSave = now; saveBundleCache(a); }
-  }).catch((e) => {
-    attrBundlePending = false;
-    console.error('attr bundle failed:', e.message);
-  });
+  attrWorkerActive = true;
+  spawnAttrWorker(now);
   return attrAllCache ? attrAllCache.a : null;
+}
+
+const attrBundleWaiters = [];
+function waitForBundle(timeoutMs) {
+  if (attrAllCache) return Promise.resolve(attrAllCache);
+  return new Promise((resolve) => {
+    let done = false;
+    const finish = () => { if (!done) { done = true; clearTimeout(t); resolve(attrAllCache); } };
+    const t = setTimeout(finish, timeoutMs || 120000);
+    attrBundleWaiters.push(finish);
+  });
+}
+
+function spawnAttrWorker(now) {
+  // Failure path: unblock waiters and, on a truly cold start, build inline so
+  // the dashboard still shows numbers.
+  function failBundle(msg) {
+    if (!attrBundlePending) return;
+    attrBundlePending = false;
+    attrWorkerActive = false;
+    console.error('attr worker failed:', msg);
+    const waiters = attrBundleWaiters.splice(0);
+    for (const f of waiters) f();
+    if (!attrAllCache) {
+      buildAttrBundle(now).then((a) => {
+        a.builtAt = now;
+        attrAllCache = { at: now, a };
+        settleBundle(now, `built inline in ${Date.now() - now}ms (worker unavailable)`);
+      }).catch((e) => console.error('inline bundle failed:', e && e.message));
+    }
+  }
+  let w;
+  try {
+    w = new Worker(ATTR_WORKER, { workerData: { now, toolsStartMs: 0 } });
+  } catch (e) {
+    // Worker unavailable (very old Node / restricted env): build inline.
+    console.error('attr worker spawn failed, building inline:', e.message);
+    failBundle(e.message);
+    return;
+  }
+  let settled = false;
+  w.on('message', (m) => {
+    if (settled) return;
+    settled = true;
+    try { w.terminate(); } catch (_) {}
+    if (!m || !m.ok) return failBundle((m && m.error) || 'unknown worker error');
+    try {
+      const a = reviveBundle(JSON.parse(m.json));
+      a.builtAt = m.builtAt;
+      attrAllCache = { at: m.builtAt, a };
+      if (m.tools) {
+        toolsCache = { at: m.builtAt, embedded: m.tools.embedded, startMs: 0, counts: m.tools.counts, fromWorker: true };
+      }
+      settleBundle(m.builtAt, `rebuilt in ${Date.now() - m.builtAt}ms (worker)`);
+    } catch (e) {
+      failBundle('bad worker payload: ' + (e && e.message));
+    }
+  });
+  w.on('error', (e) => { if (!settled) { settled = true; failBundle(e && e.message); } });
+  // A worker that posted its result exits 0 right after; only an unsettled
+  // exit is a failure.
+  w.on('exit', (code) => { if (!settled) { settled = true; failBundle('worker exited with code ' + code); } });
+}
+
+function settleBundle(now, msg) {
+  attrBundlePending = false;
+  attrWorkerActive = false;
+  console.log(`attr bundle ${msg}`);
+  if (now - (attrLastSave || 0) > BUNDLE_SAVE_MS) {
+    attrLastSave = now;
+    saveBundleCache(attrAllCache.a, toolsCache);
+  }
+  const waiters = attrBundleWaiters.splice(0);
+  for (const f of waiters) f();
+  // A brand-new bundle changes the numbers behind every panel; repaint now
+  // instead of waiting for the next 15s tick.
+  if (typeof refresh === 'function') Promise.resolve(refresh()).catch(() => {});
+  // The default scope is the first thing on screen: build it the moment the
+  // bundle lands so the opening view never shows a "generating" spinner.
+  setImmediate(() => {
+    try {
+      const r = buildReportFromDb(1);
+      if (r && r.stats && r.stats.ok) reportCache['1'] = r;
+    } catch (_) {}
+  });
+}
+
+// Pure tool-count scan (no cache side effects) so the worker can run it.
+function scanToolCounts(startMs) {
+  getDb(); // detectSchema must run before schema.embeddedTools is read
+  const timeFilterPart = startMs ? `AND p.time_updated >= ${startMs}` : '';
+  const toolRows = schema.embeddedTools
+    ? dbQuery(`SELECT COALESCE(json_extract(je.value, '$.tool'), json_extract(je.value, '$.name')) AS tool FROM session_message sm, json_each(json_extract(sm.data, '$.content')) je WHERE json_extract(je.value, '$.type') = 'tool' ${startMs ? `AND sm.time_updated >= ${startMs}` : ''}
+        UNION ALL
+        SELECT json_extract(p.data, '$.tool') AS tool FROM part p WHERE json_extract(p.data, '$.type') = 'tool' AND p.message_id NOT IN (SELECT id FROM session_message) ${startMs ? `AND p.time_updated >= ${startMs}` : ''};`) || []
+    : dbQuery(`SELECT json_extract(p.data, '$.tool') AS tool FROM part p WHERE json_extract(p.data, '$.type') = 'tool' ${timeFilterPart};`) || [];
+  const counts = {};
+  for (const row of toolRows) {
+    if (row.tool) counts[row.tool] = (counts[row.tool] || 0) + 1;
+  }
+  return counts;
+}
+
+// Read side: prefer worker-supplied counts; NEVER scan inline while a worker
+// round is in flight (a few seconds of empty tools beats a frozen UI).
+function toolCountsFor(now, startMs) {
+  const hit = toolsCache;
+  if (hit && hit.startMs === startMs && hit.embedded === schema.embeddedTools
+      && (hit.fromWorker || now - hit.at <= TOOLS_TTL)) {
+    return hit.counts;
+  }
+  if (attrWorkerActive || (hit && hit.startMs === startMs)) return (hit && hit.counts) || {};
+  toolsCache = { at: now, embedded: schema.embeddedTools, startMs, counts: scanToolCounts(startMs) };
+  return toolsCache.counts;
 }
 function computeMedian(arr) {
   if (!arr.length) return 0;
@@ -694,19 +832,7 @@ function getStatsFromDb(days) {
   // querying all of part would double count ??only parts of messages that
   // were never migrated are added from `part`). Cached (see toolsCache):
   // verification accepts api<=expected, so staleness never fails checks.
-  if (!toolsCache || now - toolsCache.at > TOOLS_TTL || toolsCache.embedded !== schema.embeddedTools || toolsCache.startMs !== startMs) {
-    const toolRows = schema.embeddedTools
-      ? dbQuery(`SELECT COALESCE(json_extract(je.value, '$.tool'), json_extract(je.value, '$.name')) AS tool FROM session_message sm, json_each(json_extract(sm.data, '$.content')) je WHERE json_extract(je.value, '$.type') = 'tool' ${startMs ? `AND sm.time_updated >= ${startMs}` : ''}
-        UNION ALL
-        SELECT json_extract(p.data, '$.tool') AS tool FROM part p WHERE json_extract(p.data, '$.type') = 'tool' AND p.message_id NOT IN (SELECT id FROM session_message) ${startMs ? `AND p.time_updated >= ${startMs}` : ''};`) || []
-      : dbQuery(`SELECT json_extract(p.data, '$.tool') AS tool FROM part p WHERE json_extract(p.data, '$.type') = 'tool' ${timeFilterPart};`) || [];
-    const counts = {};
-    for (const row of toolRows) {
-      if (row.tool) counts[row.tool] = (counts[row.tool] || 0) + 1;
-    }
-    toolsCache = { at: now, embedded: schema.embeddedTools, startMs, counts };
-  }
-  const toolCounts = toolsCache.counts;
+  const toolCounts = toolCountsFor(now, startMs);
   const totalToolUse = Object.values(toolCounts).reduce((s, v) => s + v, 0) || 1;
   const tools = Object.entries(toolCounts)
     .map(([name, count]) => ({ name, count, pct: Math.round((count / totalToolUse) * 1000) / 10 }))
@@ -935,7 +1061,7 @@ function buildReportFromDb(days) {
   // card. The all-time buckets (perDay) are still used for the summary totals
   // and stay identical to the trend chart for the same period.
   const a = getAttrPeriod(startMs);
-  const aNow = attrAllCache.at; // snapshot time of the shared bundle
+  const aNow = attrAllCache ? attrAllCache.at : now; // snapshot time of the shared bundle
   // Message-level stats per session within the period (period speed + active
   // time). One GROUP BY over the merged message view, mapped onto the same
   // session-meta buckets as tokens so row sets stay identical.
@@ -1127,6 +1253,12 @@ function refreshReport(days) {
   const hit = reportCache[key];
   const fresh = hit && Date.now() - hit.generatedAt < REPORT_TTL;
   if (fresh) return { report: hit, ready: true };
+  // Never build a report from a missing bundle: an all-zero report would sit in
+  // the 10-minute cache and blank the whole dashboard until it expires.
+  if (!attrAllCache) {
+    refreshAttrBundle();
+    return { report: null, ready: false };
+  }
   if (!reportBusy[key]) {
     reportBusy[key] = true;
     setImmediate(() => {
@@ -1274,6 +1406,21 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
+// Loaded as a MODULE by the stats worker (attr-worker.js): publish the scan
+// helpers and bail out before any server-side side effect (listening, timers,
+// signal handlers). `bin` points straight at this file, so a normal
+// `opencode-dashboard` run always has require.main === module.
+if (require.main !== module) {
+  module.exports = {
+    buildAttrBundle,
+    serializeBundle,
+    reviveBundle,
+    scanToolCounts,
+    getEmbeddedToolsFlag: () => schema.embeddedTools,
+  };
+  return;
+}
+
 function gracefulShutdown() {
   console.log('\nShutting down...');
   if (db) try { db.close(); } catch (_) {}
@@ -1323,31 +1470,27 @@ function tryListen(port, maxPort) {
 (async () => {
   try {
     const actualPort = await tryListen(PORT, PORT + 5);
-    setInterval(refresh, REFRESH_MS);
-    setInterval(refreshModels, 60000);
-    // Serve from the persisted bundle immediately (startup is instant even when a
-    // live scan would take 5–26s), then refresh in the background when stale.
-    attrBundlePending = true;
+    // Serve the persisted bundle + tool counts IMMEDIATELY. Nothing on this
+    // path touches the live DB, so the first request answers in milliseconds
+    // instead of waiting out a 3-29s scan.
     const cached = loadBundleCache();
     attrAllCache = cached || null;
-    if (cached) refreshAttrBundle();
-    setInterval(refreshAttrBundle, 60000);
+    getDb(); // detect schema now, so the worker result lands on a warm handle
+    // Spawn the fresh scan BEFORE the first refresh: while it is in flight the
+    // request thread never runs the inline tool scan (toolCountsFor skips it).
+    refreshAttrBundle();
     await refresh();
     await refreshModels();
     if (!cached) {
-      // Cold start (no cache file yet): one blocking scan, then persist it so
-      // every later start is instant.
-      attrBundlePending = true;
-      const warmT0 = Date.now();
-      attrAllCache = { at: warmT0, a: await buildAttrBundle(Date.now()) };
-      attrAllCache.a.builtAt = warmT0;
-      attrBundlePending = false;
-      attrLastSave = warmT0;
-      saveBundleCache(attrAllCache.a);
-      console.log(`attr bundle warm in ${Date.now() - warmT0}ms (cached to disk)`);
+      // No cache file yet (first run on this machine): there is nothing to
+      // serve until the worker's first result arrives.
+      await waitForBundle(180000);
       await refresh();
       await refreshModels();
     }
+    setInterval(refresh, REFRESH_MS);
+    setInterval(refreshModels, 60000);
+    setInterval(refreshAttrBundle, 60000);
     // Today's report eagerly (the common first view). Other periods build on
     // demand in the background via refreshReport stale-while-revalidate.
     for (const d of [1]) {
