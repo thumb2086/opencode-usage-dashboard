@@ -5,6 +5,7 @@ const fs = require('fs');
 const path = require('path');
 const zlib = require('zlib');
 const { Worker } = require('worker_threads');
+const crypto = require('crypto');
 const { pipeline } = require('stream');
 const { promisify } = require('util');
 const pipelineAsync = promisify(pipeline);
@@ -583,7 +584,15 @@ async function buildAttrBundle(now) {
 // Scanning the live DB costs 5–26s (WAL + concurrent opencode writes), so the
 // computed bundle is persisted and loaded on startup; a stale bundle still
 // serves every request while a fresh one is rebuilt in the background.
-const BUNDLE_FILE = path.join(__dirname, '.attr-bundle.json');
+// The bundle cache is RUNTIME state, not package content: `npm install -g`
+// replaces the whole package directory, which used to delete the cache and
+// force every upgrade to pay a full 30-60s scan before showing anything.
+// One file per database path: two servers pointed at different DBs (tests,
+// snapshots) would otherwise keep overwriting each other's entry and never
+// get a cache hit.
+const BUNDLE_DIR = path.join(process.env.USERPROFILE || process.env.HOME || process.cwd(), '.cache', 'opencode-statboard');
+const BUNDLE_FILE = path.join(BUNDLE_DIR, `attr-bundle-${crypto.createHash('sha1').update(BACKUP_SRC.toLowerCase()).digest('hex').slice(0, 12)}.json`);
+const BUNDLE_FILE_LEGACY = path.join(__dirname, '.attr-bundle.json');
 const BUNDLE_SAVE_MS = 60000; // don't hammer the disk while chatting
 // Cache is bound to the DATABASE PATH it was computed from, so pointing
 // OPENCODE_DATA at another DB (tests, a restored copy) never reuses it.
@@ -653,22 +662,35 @@ function reviveBundle(o) {
   return a;
 }
 function saveBundleCache(a, tools) {
-  try { fs.writeFileSync(BUNDLE_FILE, serializeBundle(a, tools)); } catch (_) {}
+  try {
+    fs.mkdirSync(BUNDLE_DIR, { recursive: true });
+    fs.writeFileSync(BUNDLE_FILE, serializeBundle(a, tools));
+  } catch (_) {}
 }
 function loadBundleCache() {
-  try {
-    const raw = fs.readFileSync(BUNDLE_FILE, 'utf8');
-    const o = JSON.parse(raw);
-    if (o && o.v === 2 && o.db === dbFingerprint() && o.periods && Object.keys(o.periods).length) {
-      console.log(`attr bundle loaded from cache (built ${Math.round((Date.now() - o.builtAt) / 60000)} min ago)`);
-      // Tool counts ride along so a cold start paints complete numbers before
-      // the first worker round lands.
-      if (o.tools && o.tools.counts) {
-        toolsCache = { at: o.builtAt, embedded: o.tools.embedded, startMs: 0, counts: o.tools.counts, fromWorker: true };
+  for (const file of [BUNDLE_FILE, BUNDLE_FILE_LEGACY]) {
+    try {
+      const raw = fs.readFileSync(file, 'utf8');
+      const o = JSON.parse(raw);
+      if (o && o.v === 2 && o.db === dbFingerprint() && o.periods && Object.keys(o.periods).length) {
+        console.log(`attr bundle loaded from cache (built ${Math.round((Date.now() - o.builtAt) / 60000)} min ago)`);
+        // Tool counts ride along so a cold start paints complete numbers before
+        // the first worker round lands.
+        if (o.tools && o.tools.counts) {
+          toolsCache = { at: o.builtAt, embedded: o.tools.embedded, startMs: 0, counts: o.tools.counts, fromWorker: true };
+        }
+        // Migrate the pre-2.8.4 in-package location on first load.
+        if (file !== BUNDLE_FILE) {
+          try {
+            fs.mkdirSync(BUNDLE_DIR, { recursive: true });
+            fs.writeFileSync(BUNDLE_FILE, raw);
+            console.log('attr bundle cache migrated to ' + BUNDLE_DIR);
+          } catch (_) {}
+        }
+        return { at: o.builtAt, a: reviveBundle(o) };
       }
-      return { at: o.builtAt, a: reviveBundle(o) };
-    }
-  } catch (_) {}
+    } catch (_) {}
+  }
   return null;
 }
 function getAttrAll() {
@@ -932,19 +954,29 @@ async function refresh() {
   if (state.busy) return;
   state.busy = true;
   try {
+    // No bundle yet (first run on this machine, or right after `npm i -g`
+    // wiped the package dir): the worker is still scanning — which can take
+    // 30-60s on a 3GB DB. Publish "loading" instead of an all-zero payload
+    // the UI cannot tell apart from real numbers.
+    if (!attrAllCache) {
+      refreshAttrBundle();
+      state.loading = true;
+      return;
+    }
     const p = getStatsFromDb(0);
     if (p && p.ok) {
       state.data = p;
       state.error = null;
       state.updatedAt = Date.now();
+      state.loading = false;
     } else {
       state.error = state.error || 'failed to read database';
     }
   } catch (e) {
     state.error = e.message;
+  } finally {
+    state.busy = false;
   }
-  state.loading = false;
-  state.busy = false;
 }
 
 function getModelsFromDb() {

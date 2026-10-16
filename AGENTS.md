@@ -16,24 +16,34 @@ opencode-dashboard
 - `attr-worker.js` — Stats worker (`worker_threads`). Runs the heavy scan off the request thread and posts back the serialized bundle + tool counts. `server.js` is `require`-able (it guards all side effects behind `require.main === module`) so the worker reuses the exact same scan code instead of a copy.
 - `public/index.html` — Single-file frontend (vanilla JS/CSS/HTML, no build step). Report charts (`#speed-bars`, `#agent-bars`, `#session-bars`) render from `/api/report` data via `renderReportCharts`; `check-frontend-smoke.js` executes the page's real script against live API data with a stub DOM.
 - `backups/` — Gzipped DB backups (auto-rotated, `OPENCODE_BACKUP_RETENTION`)
-- `.attr-bundle.json` — Persisted attribution bundle (git/npm-ignored). Keyed by DB path+size+mtime, so pointing `OPENCODE_DATA` elsewhere never reuses it.
 
-## Startup & latency (measured 2026-10-12, live 2.7GB WAL DB)
+Runtime state lives OUTSIDE the package directory:
+
+| State | Location |
+|---|---|
+| Attribution bundle cache | `~/.cache/opencode-statboard/attr-bundle-<sha1(db path)>.json` |
+| DB backups | `<package>/backups/` (wiped by `npm i -g` — acceptable, they are re-creatable) |
+
+One cache file per database path (sha1 of the lowercased path). Two servers pointed at different DBs used to overwrite each other's entry and never get a cache hit. The pre-2.8.4 in-package `.attr-bundle.json` is still read once and then migrated.
+
+## Startup & latency (measured 2026-10-12 / 2026-10-16, live 3GB WAL DB)
 
 The message table is ~1GB of JSON; scanning it with `json_extract` costs **43s**, fetching the raw `data` blob and calling `JSON.parse` once per row costs **~2.5s**. That scan is still synchronous `better-sqlite3`, so it runs in `attr-worker.js`:
 
 | Stage | Before | After |
 |---|---|---|
-| Cold start to first data (cache present) | 28.5s | **0.52s** |
-| Cold start, no cache (worker scan runs meanwhile) | 28.5s | 6.5s, UI responsive throughout |
-| Report request while a scan is in flight | blocked 3–29s | ~1ms |
+| Cold start to first data (cache present) | 28.5s | **0.56s** |
+| Cold start, no cache (worker scan runs meanwhile) | 28.5s | 6–58s, UI responsive throughout, reports `loading` |
+| Report request while a scan is in flight | blocked 3–58s | ~1ms |
 | First switch to an unvisited scope | up to 6.3s | ~130ms, ~0ms after the frontend's idle prefetch |
 
 Rules that keep it fast:
 
 - **Nothing on the request path may run a full scan.** `toolCountsFor()` returns the worker/cached counts while a worker round is in flight; only if the worker is unavailable does it fall back to an inline scan.
-- **The bundle cache is keyed on the DB PATH only.** Keying it on size/mtime looked safer but the live DB grows on every message, so the fingerprint changed constantly and the "instant" cold start silently degraded back to a 6–7s rebuild on a busy machine.
+- **The bundle cache lives in the user cache dir, not the package dir.** `npm install -g` replaces the package directory, so a cache stored next to `server.js` was deleted on every upgrade and each upgrade paid a full 30–60s scan before showing anything.
+- **The bundle cache is keyed on the DB PATH only** (in the filename). Keying it on size/mtime looked safer, but the live DB grows on every message, so the fingerprint changed constantly and the "instant" cold start silently degraded back to a full rebuild on a busy machine.
 - **Reports refuse to build without a bundle** (`refreshReport` returns `ready:false`), otherwise an all-zero report sits in the 10-minute cache and blanks the dashboard.
+- **With no bundle at all**, `refresh()` keeps `state.loading = true` and `/api/stats` reports `ok:false`, so the UI shows "updating" instead of an all-zero payload it cannot tell apart from real numbers.
 - The bundle is persisted with its tool counts, so a cold start paints complete numbers before the first worker round lands. `settleBundle` repaints and prewarms the default scope report.
 - The frontend `warmOtherScopes()` fetches the scopes the user is NOT looking at, on idle, so a scope click is an in-memory swap.
 
@@ -149,6 +159,7 @@ npm install -g opencode-statboard   # after the Actions run is green
 - `better-sqlite3` is a native addon; must match Node.js ABI
 - `attributeUsage` does a full DB scan (~62k messages, ~1GB JSON) — always in the worker thread; the result is memoized for `ATTR_TTL` and persisted to `.attr-bundle.json`
 - `check-frontend-smoke.js` compares the rendered DOM against the report for the scope the page is showing; it is scope-aware and pre-fetches every scope the page can visit, because a stub that answers every `/api/report` with one scope makes the "repainted for new scope" checks meaningless
+- The smoke harness must not capture `/api/stats` before the payload is real: it polls until `ok && trendReady && input > 0 && tools.length`, because a server that just booted (or one mid-rebuild) answers with zeros and no trend, and every DOM assertion would then compare against an empty page
 - Trend buckets are sliced from the same `getAttrAll()` attribution the report uses — never a separate windowed call (windowed calls inflate in-window days via residual growth; fixed 2026-09-29 after measuring +0.25–1.7M input/day). Remaining panel differences are cache ages only (trend ≤60s, report ≤10min, both timestamps shown)
 - V2 tool counts use `json_each` over `session_message` content (~1.5s full scan), cached 5min via `toolsCache` (the 15s refresh serves cache; verification accepts api<=expected so staleness never fails checks); legacy V1 DBs scan `part` instead
 - OpenCode V2 writes `cost = 0` for free/subscription providers, so $ totals only reflect paid (per-token billed) usage — same field, not a schema issue

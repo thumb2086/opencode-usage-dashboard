@@ -43,9 +43,10 @@ const getStats = () => {
     const j = get(url);
     // The dashboard serves its persisted bundle at startup, but a server that
     // just booted with no cache (or one mid-rebuild) answers with zeros for a
-    // few seconds. Capturing that would make every DOM assertion compare
-    // against an empty payload.
-    if (j.ok && j.data && j.data.cost && j.data.cost.input > 0 && (j.data.tools || []).length) return j;
+    // few seconds, and the trend arrives on its own (slower) schedule.
+    // Capturing either early would make DOM assertions compare against an
+    // empty payload or a page rendered without its trend chart.
+    if (j.ok && j.trendReady && j.data && j.data.cost && j.data.cost.input > 0 && (j.data.tools || []).length) return j;
     sleepSync(500);
   }
   return get(url);
