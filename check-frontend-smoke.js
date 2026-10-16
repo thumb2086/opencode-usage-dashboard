@@ -215,6 +215,21 @@ chk('headline also shows the new-token subtotal', (() => {
   const sub = parseTok(textOf('hl-tokens-incl'));
   return Number.isFinite(sub) && Math.abs(sub - core) <= Math.max(core * 0.03, 1000);
 })());
+// Meta line carries a daily token average on the same (cache-inclusive) basis
+// as the headline: tokens / days.
+chk('meta line reports avg tokens per day incl. cache', (() => {
+  const meta = textOf('hl-meta');
+  const at = meta.indexOf(STRINGS.en.avgTokensDay);
+  if (at < 0) return false;
+  const after = meta.slice(at + STRINGS.en.avgTokensDay.length);
+  const shown = parseTok(after.replace(/^[^\d]*/, '').split(/\s{2,}|\s·\s/)[0]);
+  const c = (r.stats && r.stats.cost) || {};
+  const days = (r.stats && r.stats.overview && r.stats.overview.days) || 0;
+  const core = (c.input || 0) + (c.output || 0) + (c.reasoning || 0);
+  const expect = days > 0 ? (core + (c.cacheRead || 0) + (c.cacheWrite || 0)) / days : NaN;
+  return Number.isFinite(shown) && Number.isFinite(expect) && Math.abs(shown - expect) <= Math.max(expect * 0.03, 1000);
+})());
+chk('avgTokensDay label exists in both languages', !!STRINGS.en.avgTokensDay && !!STRINGS['zh-TW'].avgTokensDay && /day/i.test(STRINGS.en.avgTokensDay));
 chk('cache label says re-reads', /re-read/i.test(STRINGS.en.tCache) && /re-read|重讀/i.test(STRINGS['zh-TW'].tCache));
 chk('headline cost / market / saved rendered as $',
   [textOf('hl-cost'), textOf('hl-market'), textOf('hl-saved')].every((v) => v.includes('$')));

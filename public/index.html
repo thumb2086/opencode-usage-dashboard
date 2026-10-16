@@ -313,7 +313,7 @@ const STRINGS = {
     costShare: 'actual paid', atCatalog: 'same usage at catalog list prices',
     savedOf: '{pct} of market value',
     sessionsLabel: 'Sessions', messagesLabel: 'Messages', daysLabel: 'Days',
-    avgCostDay: 'Avg cost / day', avgTokensSession: 'Avg tokens / session', medianTokensSession: 'Median tokens / session',
+    avgCostDay: 'Avg cost / day', avgTokensDay: 'Avg tokens / day (incl. cache re-reads)', avgTokensSession: 'Avg tokens / session', medianTokensSession: 'Median tokens / session',
     activeLabel: 'active',
     pricesAsOf: 'prices as of {d}',
     unpricedModels: '{n} models unpriced ({t} tokens not valued)',
@@ -359,7 +359,7 @@ const STRINGS = {
     costShare: '實際付費', atCatalog: '同等用量依牌價換算',
     savedOf: '占市價 {pct}',
     sessionsLabel: '工作階段', messagesLabel: '訊息數', daysLabel: '天數',
-    avgCostDay: '平均費用 / 天', avgTokensSession: '平均 tokens / 場', medianTokensSession: '中位數 tokens / 場',
+    avgCostDay: '平均費用 / 天', avgTokensDay: '平均 tokens / 天（含快取重讀）', avgTokensSession: '平均 tokens / 場', medianTokensSession: '中位數 tokens / 場',
     activeLabel: '實際執行',
     pricesAsOf: '牌價日期 {d}',
     unpricedModels: '{n} 個模型查無牌價（{t} tokens 未計價）',
@@ -547,8 +547,13 @@ function renderReport(rep) {
   $('hl-saved').textContent = fmtCost(c.savedTotal);
   $('hl-savedPct').textContent = (c.marketTotal > 0 && c.savedPct != null) ? fmtLang('savedOf', { pct: fmtPct(c.savedPct) }) : '';
 
+  // Daily token average on the SAME basis as the headline (cache re-reads
+  // included), so it reads against the Tokens card instead of contradicting it.
+  const dayTokTotal = coreTok + cacheAll;
+  const avgTokensDay = o.days > 0 ? dayTokTotal / o.days : null;
   const meta = [t('sessionsLabel') + ' ' + fmt(o.sessions), t('messagesLabel') + ' ' + fmt(o.messages),
     t('daysLabel') + ' ' + fmt(o.days), t('avgCostDay') + ' ' + fmtCost(c.avgDay),
+    t('avgTokensDay') + ' ' + (avgTokensDay != null ? fmt(avgTokensDay) : EM),
     t('avgTokensSession') + ' ' + fmt(c.avgTokensSession), t('medianTokensSession') + ' ' + fmt(c.medianTokensSession)];
   $('hl-meta').textContent = meta.join('  ·  ');
 
