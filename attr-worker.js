@@ -18,6 +18,7 @@ const srv = require('./server.js');
   parentPort.postMessage({
     ok: true,
     builtAt: now,
+    dbRevision: srv.dbRevision(),
     json: srv.serializeBundle(bundle, { embedded: srv.getEmbeddedToolsFlag(), startMs: workerData.toolsStartMs || 0, counts }),
     tools: { embedded: srv.getEmbeddedToolsFlag(), startMs: workerData.toolsStartMs || 0, counts },
   });

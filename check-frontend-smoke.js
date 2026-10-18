@@ -113,6 +113,7 @@ chk('section collapse persisted via localStorage', html.includes('restoreSection
 chk('only two tables (breakdown sub-tabs share one, pricing one)',
   (html.match(/<tbody id="bd-(models|agents|sessions)"/g) || []).length === 3 &&
   (html.match(/<table>/g) || []).length === 2);
+console.log(`DEBUG statsInput=${stats.data.cost.input} statsTools=${(stats.data.tools || []).length} rDays=${r.days} rIn=${r.stats.cost.input} rSess=${r.sessions.length} domSessions=${rowsIn('bd-sessions').length} hlTokens=${textOf('hl-tokens')} hlSub=${textOf('hl-tokens-incl')} scopeTag=${textOf('tag-headline')} trendReady=${stats.trendReady}`);
 chk('headline cards carry scope-dependent numbers',
   ['hl-tokens', 'hl-in', 'hl-out', 'hl-reasoning', 'hl-cache', 'hl-cost', 'hl-market', 'hl-saved']
     .every((id) => html.includes('id="' + id + '"')));

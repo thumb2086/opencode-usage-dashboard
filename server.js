@@ -602,6 +602,16 @@ const BUNDLE_SAVE_MS = 60000; // don't hammer the disk while chatting
 function dbFingerprint() {
   return BACKUP_SRC;
 }
+// Cheap revision check for the REBUILD decision (distinct from the cache
+// fingerprint above, which is intentionally path-only). Two servers pointed at
+// the same DB see the same revision, so a DB that has not changed since the
+// last scan is never scanned again.
+function dbRevision() {
+  try {
+    const st = fs.statSync(BACKUP_SRC);
+    return `${BACKUP_SRC}|${st.size}|${Math.round(st.mtimeMs)}`;
+  } catch (_) { return BACKUP_SRC; }
+}
 function serializeBundle(a, tools) {
   // MUST NOT mutate: the caller serializes the LIVE bundle, and swapping a
   // bucket's `sessions` Set for an array in place would break every later
@@ -623,7 +633,7 @@ function serializeBundle(a, tools) {
     perAgentPeriod: setToArr(sl.perAgentPeriod),
   };
   return JSON.stringify({
-    v: 2, builtAt: a.builtAt, db: dbFingerprint(), byPeriodStart: a.byPeriodStart,
+    v: 2, builtAt: a.builtAt, db: dbFingerprint(), dbRevision: dbRevision(), byPeriodStart: a.byPeriodStart,
     tools: tools ? { embedded: tools.embedded, startMs: tools.startMs, counts: tools.counts } : null,
     perDay: days,
     perModel: setToArr(a.perModel), perAgent: setToArr(a.perAgent),
@@ -711,9 +721,17 @@ function refreshAttrBundle() {
   if (attrBundlePending) return attrAllCache ? attrAllCache.a : null;
   const now = Date.now();
   if (attrAllCache && now - attrAllCache.at < ATTR_TTL) return attrAllCache.a;
+  const rev = dbRevision();
+  // DB hasn't changed since the last scan: just extend the TTL, no scan.
+  // This is the common case on a machine where opencode is idle (which is most
+  // of the time), and it turns a 30-60s rebuild into a stat() call.
+  if (attrAllCache && rev && attrAllCache.dbRevision === rev) {
+    attrAllCache.at = now;
+    return attrAllCache.a;
+  }
   attrBundlePending = true;
   attrWorkerActive = true;
-  spawnAttrWorker(now);
+  spawnAttrWorker(now, rev);
   return attrAllCache ? attrAllCache.a : null;
 }
 
@@ -728,7 +746,7 @@ function waitForBundle(timeoutMs) {
   });
 }
 
-function spawnAttrWorker(now) {
+function spawnAttrWorker(now, rev) {
   // Failure path: unblock waiters and, on a truly cold start, build inline so
   // the dashboard still shows numbers.
   function failBundle(msg) {
@@ -748,7 +766,7 @@ function spawnAttrWorker(now) {
   }
   let w;
   try {
-    w = new Worker(ATTR_WORKER, { workerData: { now, toolsStartMs: 0 } });
+    w = new Worker(ATTR_WORKER, { workerData: { now, toolsStartMs: 0, dbRevision: rev } });
   } catch (e) {
     // Worker unavailable (very old Node / restricted env): build inline.
     console.error('attr worker spawn failed, building inline:', e.message);
@@ -764,7 +782,8 @@ function spawnAttrWorker(now) {
     try {
       const a = reviveBundle(JSON.parse(m.json));
       a.builtAt = m.builtAt;
-      attrAllCache = { at: m.builtAt, a };
+      a.dbRevision = m.dbRevision || rev;
+      attrAllCache = { at: m.builtAt, a, dbRevision: a.dbRevision };
       if (m.tools) {
         toolsCache = { at: m.builtAt, embedded: m.tools.embedded, startMs: 0, counts: m.tools.counts, fromWorker: true };
       }
@@ -1448,6 +1467,7 @@ if (require.main !== module) {
     serializeBundle,
     reviveBundle,
     scanToolCounts,
+    dbRevision,
     getEmbeddedToolsFlag: () => schema.embeddedTools,
   };
   return;
