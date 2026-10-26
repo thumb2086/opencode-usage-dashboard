@@ -90,8 +90,8 @@ const provName = (p) => p.provider + '/' + p.model;
 // 1. STATIC STRUCTURE — new IA, old sections gone
 // =====================================================================
 console.log('--- structure ---');
-const SECTIONS = ['sec-headline', 'sec-trend', 'sec-breakdown', 'sec-tools', 'sec-pricing', 'sec-raw'];
-chk('6 collapsible sections declared', (html.match(/<details class="tool-section[^>]*id="sec-/g) || []).length === 6);
+const SECTIONS = ['sec-headline', 'sec-trend', 'sec-heatmap', 'sec-breakdown', 'sec-tools', 'sec-pricing', 'sec-raw'];
+chk('7 collapsible sections declared', (html.match(/<details class="tool-section[^>]*id="sec-/g) || []).length === 7);
 chk('new section ids present', SECTIONS.every((id) => html.includes('id="' + id + '"')));
 chk('removed sections gone (speed/agent/sessions/savings)',
   ['sec-speed', 'sec-agent', 'sec-sessions', 'sec-savings'].every((id) => !html.includes('id="' + id + '"')));
@@ -292,6 +292,8 @@ chk('trend x-axis puts today (newest bucket) leftmost',
   stripTags((htmlOf('trend-token-x').match(/<span[^>]*>([^<]*)<\/span>/g) || []).pop().replace(/<[^>]*>/g, '')) === nLabels[nLabels.length - 1]);
 chk('trend tooltip carries per-day detail', htmlOf('trend-tokens').includes('title='));
 chk('trend cost chart or all-free note', htmlOf('trend-cost').length > 0 || textOf('costZeroNote') === STRINGS.en.allFree);
+chk('heatmap grid renders cells', (htmlOf('heatmap-grid').match(/class="hm-cell/g) || []).length > 0);
+chk('heatmap legend present', htmlOf('heatmap-legend') ? true : (html.includes('heatmap-legend') || html.includes('hm-cell hm-4')));
 // Tools: top 12 + one aggregated "N more tools" row (the long tail is noise).
 {
   const toolRows = (htmlOf('tool-bars').match(/class="bar-row"/g) || []).length;

@@ -91,6 +91,19 @@
   .trend-wrap { display: flex; gap: 24px; flex-wrap: wrap; }
   .trend-wrap > div { flex: 1; min-width: 300px; }
   .trend-wrap #costSection { min-width: 240px; }
+  .heatmap-wrap { display: flex; flex-direction: column; gap: 8px; }
+  .heatmap-months { display: flex; gap: 2px; padding-left: 22px; font-size: 10px; color: var(--muted); }
+  .heatmap-months span { flex: 1; text-align: left; overflow: visible; white-space: nowrap; }
+  .heatmap-grid { display: flex; gap: 2px; }
+  .heatmap-grid .hm-week { display: flex; flex-direction: column; gap: 2px; }
+  .hm-cell { width: 11px; height: 11px; border-radius: 2px; background: var(--card2); border: 1px solid var(--border); box-sizing: border-box; }
+  .hm-cell.hm-0 { background: var(--card2); }
+  .hm-cell.hm-1 { background: color-mix(in srgb, var(--in) 22%, var(--card2)); }
+  .hm-cell.hm-2 { background: color-mix(in srgb, var(--in) 45%, var(--card2)); }
+  .hm-cell.hm-3 { background: color-mix(in srgb, var(--in) 70%, var(--card2)); }
+  .hm-cell.hm-4 { background: var(--in); }
+  .heatmap-legend { display: flex; gap: 6px; align-items: center; font-size: 11px; color: var(--muted); }
+  .heatmap-legend .hm-cell { width: 10px; height: 10px; }
   .legend { display: flex; gap: 16px; font-size: 12px; color: var(--muted); margin-bottom: 12px; flex-wrap: wrap; }
   .legend span { display: flex; align-items: center; gap: 6px; }
   .sw { width: 12px; height: 12px; border-radius: 3px; display: inline-block; }
@@ -222,6 +235,24 @@
 </details>
 
 <!-- 3. BREAKDOWN — one table, three sub-tabs, sorted by tokens -->
+<!-- 2b. HEATMAP — daily token intensity, last 90 days -->
+<details class="tool-section" open id="sec-heatmap">
+  <summary><h2 data-i18n="heatmap">HEATMAP</h2><span class="scope-tag" id="tag-heatmap"></span></summary>
+  <div class="heatmap-wrap">
+    <div class="heatmap-months" id="heatmap-months"></div>
+    <div class="heatmap-grid" id="heatmap-grid"></div>
+    <div class="heatmap-legend">
+      <span data-i18n="less">Less</span>
+      <span class="hm-cell hm-0"></span>
+      <span class="hm-cell hm-1"></span>
+      <span class="hm-cell hm-2"></span>
+      <span class="hm-cell hm-3"></span>
+      <span class="hm-cell hm-4"></span>
+      <span data-i18n="more">More</span>
+    </div>
+  </div>
+</details>
+
 <details class="tool-section" open id="sec-breakdown">
   <summary><h2 data-i18n="breakdown">BREAKDOWN</h2><span class="scope-tag" id="tag-breakdown"></span></summary>
   <div class="subtabs" id="bdTabs">
@@ -303,9 +334,9 @@ const STRINGS = {
     scopeSuffix: { '-1': 'All time', '1': 'Today (local)', '7': 'Last 7 days (local)', '30': 'Month to date (local)' },
     trendScope: '{n}-day buckets · today leftmost',
     toolsOther: '{n} more tools',
-    allTimeTrend: 'All time · 90-day buckets · today leftmost',
+    allTimeTrend: 'All time · 90-day buckets · today leftmost', less: 'Less', more: 'More',
     toolsScope: '{scope} · tool counts are all-time',
-    headline: 'HEADLINE', trend: 'TREND', breakdown: 'BREAKDOWN', toolUsage: 'TOOLS',
+    headline: 'HEADLINE', trend: 'TREND', heatmap: 'HEATMAP', breakdown: 'BREAKDOWN', toolUsage: 'TOOLS', heatmapScope: '90 days',
     pricingBasis: 'PRICING BASIS', rawText: 'RAW TEXT',
     rawHint: 'Plain-text statement, same numbers as the tables above.',
     tokens: 'Tokens', tIn: 'in', tOut: 'out', tReasoning: 'reasoning', tCache: 'cache re-reads', tokensExclCache: 'new tokens (excl. cache re-reads): {v}',
@@ -349,9 +380,9 @@ const STRINGS = {
     scopeSuffix: { '-1': '全期', '1': '今天（本地）', '7': '近 7 天（本地）', '30': '本月至今（本地）' },
     trendScope: '{n} 天分桶 · 今天在最左',
     toolsOther: '其他 {n} 個工具',
-    allTimeTrend: '全期 · 90 天分桶 · 今天在最左',
+    allTimeTrend: '全部 · 90 天桶 · 今天在左', less: '較少', more: '較多',
     toolsScope: '{scope} · 工具統計一律為全期',
-    headline: '重點指標', trend: '趨勢', breakdown: '明細', toolUsage: '工具',
+    headline: '重點指標', trend: '趨勢', heatmap: '熱力圖', breakdown: '明細', toolUsage: '工具', heatmapScope: '90 天',
     pricingBasis: '定價依據', rawText: '原始文字',
     rawHint: '純文字報表，數字與上方表格一致。',
     tokens: 'Tokens', tIn: '輸入', tOut: '輸出', tReasoning: '推理', tCache: '快取重讀', tokensExclCache: '新 token（不含快取重讀）：{v}',
@@ -485,6 +516,7 @@ function applyScopeTags() {
   $('tag-pricing').textContent = sl;
   $('tag-raw').textContent = sl;
   $('tag-trend').textContent = scopeDays === -1 ? t('allTimeTrend') : fmtLang('trendScope', { n: trendDays(scopeDays) });
+  $('tag-heatmap').textContent = t('heatmapScope');
   $('tag-tools').textContent = fmtLang('toolsScope', { scope: sl });
   $('scopeNow').textContent = sl;
   $('updated').textContent = lastUpdatedText || t('loading');
@@ -743,6 +775,76 @@ function renderTrend(data) {
     `<span style="${i % labelStep === 0 ? '' : 'visibility:hidden'}">${esc(l)}</span>`).join('');
 }
 
+// ---- heatmap (daily token intensity, last 90 days) ---------------------
+// GitHub-style calendar: one cell per day, colored by how many tokens the
+// models processed that day (input + cache re-reads). Always shows the
+// 90-day window so it stays useful regardless of the global scope.
+let heatmapTrend = null;
+async function loadHeatmap() {
+  if (heatmapTrend) return heatmapTrend;
+  try {
+    const r = await fetch('/api/stats?days=90&_=' + Date.now(), { cache: 'no-store' });
+    const j = await r.json();
+    if (j && j.trend && j.trend.labels && j.trend.labels.length) {
+      heatmapTrend = j.trend;
+      return heatmapTrend;
+    }
+  } catch (_) {}
+  return null;
+}
+function renderHeatmap(data) {
+  const grid = $('heatmap-grid');
+  const months = $('heatmap-months');
+  if (!grid) return;
+  if (!data || !data.dates || !data.dates.length) {
+    grid.innerHTML = ''; months.innerHTML = '';
+    return;
+  }
+  const dates = data.dates;
+  const input = data.input || [];
+  const cache = data.cacheRead || [];
+  const vals = dates.map((d, i) => (input[i] || 0) + (cache[i] || 0));
+  const max = Math.max(1, ...vals);
+  // Pad leading days so the first date lands on its real weekday (Sun=0).
+  const first = new Date(dates[0] + 'T00:00:00');
+  const lead = first.getDay(); // 0 Sun .. 6 Sat
+  const cells = [];
+  for (let i = 0; i < lead; i++) cells.push(null);
+  dates.forEach((d, i) => cells.push({ d, v: vals[i] }));
+  // Group into weeks of 7 (Sunday-first).
+  const weeks = [];
+  for (let i = 0; i < cells.length; i += 7) weeks.push(cells.slice(i, i + 7));
+  // Pad the last week to 7.
+  const last = weeks[weeks.length - 1];
+  while (last.length < 7) last.push(null);
+
+  const levelOf = (v) => {
+    if (!v || v <= 0) return 0;
+    const r = v / max;
+    if (r >= 0.75) return 4;
+    if (r >= 0.5) return 3;
+    if (r >= 0.25) return 2;
+    return 1;
+  };
+  grid.innerHTML = weeks.map((w) => '<div class="hm-week">' +
+    w.map((c) => c
+      ? `<div class="hm-cell hm-${levelOf(c.v)}" title="${esc(c.d)} · ${fmt(c.v)}"></div>`
+      : '<div class="hm-cell" style="border-color:transparent;background:transparent"></div>').join('') +
+    '</div>').join('');
+
+  // Month labels: one per week-column where the month changes.
+  const monthNames = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  let lastMonth = -1;
+  months.innerHTML = weeks.map((w) => {
+    const firstCell = w.find((c) => c);
+    if (!firstCell) return '<span></span>';
+    const m = new Date(firstCell.d + 'T00:00:00').getMonth();
+    if (m === lastMonth) return '<span></span>';
+    lastMonth = m;
+    return '<span>' + monthNames[m] + '</span>';
+  }).join('');
+}
+
 // ---- tools (all-time; the API cannot slice them) -----------------------
 // Long tail (48 tools, most under 0.1%) is folded into one "other" row:
 // a 48-row list of near-empty bars is visual noise, not information.
@@ -781,6 +883,7 @@ function renderAll() {
   if (window.__lastReport) renderReport(window.__lastReport);
   const tr = trendCache[trendDays(scopeDays)];
   renderTrend(tr || null);
+  renderHeatmap(heatmapTrend);
   renderTools(lastTools);
 }
 
@@ -977,6 +1080,7 @@ renderAll();
 poll();
 setInterval(poll, 15000);
 loadReport(scopeDays);
+loadHeatmap().then(renderHeatmap);
 </script>
 </body>
 </html>

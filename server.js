@@ -244,6 +244,7 @@ async function generateTrend(days) {
     generatedAt: attrAllCache.at, // attribution build time, not response time
     step: 1,
     labels: buckets.map((b) => (b.getMonth() + 1) + '/' + b.getDate()),
+    dates: buckets.map((b) => b.toISOString().slice(0, 10)),
     sessions: buckets.map(sess),
     input: buckets.map((b) => at(b, 'input')),
     output: buckets.map((b) => at(b, 'output')),
@@ -1468,6 +1469,7 @@ if (require.main !== module) {
     reviveBundle,
     scanToolCounts,
     dbRevision,
+    BACKUP_SRC,
     getEmbeddedToolsFlag: () => schema.embeddedTools,
   };
   return;
