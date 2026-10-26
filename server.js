@@ -20,9 +20,13 @@ const TREND_MS = 60 * 1000;
 const REPORT_TTL = 10 * 60 * 1000;
 const TOOLS_TTL = 5 * 60 * 1000;
 const STATS_TTL = 10 * 60 * 1000;
-const CACHE_CLEANUP_MS = 5 * 60 * 1000;
+// Backup interval: default 1 hour (was 5 min — far too aggressive for 3GB DB).
+// Configurable via OPENCODE_BACKUP_INTERVAL_MS env var.
+const CACHE_CLEANUP_MS = parseInt(process.env.OPENCODE_BACKUP_INTERVAL_MS || String(60 * 60 * 1000), 10);
 const BACKUP_DIR = path.join(__dirname, 'backups');
 const BACKUP_RETENTION = parseInt(process.env.OPENCODE_BACKUP_RETENTION || '3', 10) || 3;
+// Set OPENCODE_BACKUP_INTERVAL_MS=0 to disable auto backup entirely
+const BACKUP_DISABLED = process.env.OPENCODE_BACKUP_INTERVAL_MS === '0';
 const BACKUP_SRC = process.env.OPENCODE_DATA
   ? path.join(process.env.OPENCODE_DATA, 'opencode.db')
   : path.join(process.env.USERPROFILE || process.env.HOME || '', '.local', 'share', 'opencode', 'opencode.db');
@@ -336,6 +340,11 @@ function marketOf(tok, provider, model) {
 // message count, output, reasoning, active ms, wall span on the MESSAGE clock)
 // and msgAgentAgg, so reports need no extra queries.
 const ATTR_TTL = 300000;
+// Minimum interval between full scans, regardless of DB revision changes.
+// Prevents excessive scanning when opencode is actively writing (WAL checkpoints
+// change DB mtime/size constantly, making revision appear changed every time).
+// Default 15 minutes — configurable via OPENCODE_MIN_SCAN_INTERVAL_MS.
+const MIN_SCAN_INTERVAL = parseInt(process.env.OPENCODE_MIN_SCAN_INTERVAL_MS || String(15 * 60 * 1000), 10);
 // Tool counts change slowly but the embedded-content scan costs ~2.8s on a
 // 2.7GB live DB, so it is computed by the stats WORKER (see spawnAttrWorker)
 // and only ever READ here. `fromWorker` marks worker-supplied data, which is
@@ -562,6 +571,9 @@ async function attributeUsage(startMs, endMs, periodStartsMs) {
 let attrAllCache = null;
 let attrBundlePending = false;
 let attrLastSave = 0;
+let attrLastScan = 0; // timestamp of last scan start
+// Set OPENCODE_ATTR_SCAN_DISABLED=1 to disable background attr scans entirely
+const ATTR_SCAN_DISABLED = process.env.OPENCODE_ATTR_SCAN_DISABLED === '1';
 const EMPTY_ATTR = {
   perDay: {}, perModel: {}, perAgent: {}, perSession: {},
   totals: { sessions: 0, messages: 0, input: 0, output: 0, reasoning: 0, cacheRead: 0, cacheWrite: 0, cost: 0 },
@@ -722,16 +734,21 @@ function refreshAttrBundle() {
   if (attrBundlePending) return attrAllCache ? attrAllCache.a : null;
   const now = Date.now();
   if (attrAllCache && now - attrAllCache.at < ATTR_TTL) return attrAllCache.a;
+  // Enforce minimum scan interval to prevent excessive scanning when DB
+  // revision changes frequently (e.g., due to WAL checkpoints during active
+  // opencode usage). This is independent of TTL and revision checks.
+  if (attrLastScan && now - attrLastScan < MIN_SCAN_INTERVAL) {
+    return attrAllCache ? attrAllCache.a : null;
+  }
   const rev = dbRevision();
   // DB hasn't changed since the last scan: just extend the TTL, no scan.
-  // This is the common case on a machine where opencode is idle (which is most
-  // of the time), and it turns a 30-60s rebuild into a stat() call.
   if (attrAllCache && rev && attrAllCache.dbRevision === rev) {
     attrAllCache.at = now;
     return attrAllCache.a;
   }
   attrBundlePending = true;
   attrWorkerActive = true;
+  attrLastScan = now;
   spawnAttrWorker(now, rev);
   return attrAllCache ? attrAllCache.a : null;
 }
