@@ -1,6 +1,17 @@
 const { parentPort, workerData } = require('worker_threads');
 const srv = require('./server.js');
 
+// I/O throttling parameters (from env, with defaults)
+const ITHROTTLE_BATCH = parseInt(process.env.OPENCODE_ITHROTTLE_BATCH || '1000', 10);
+const ITHROTTLE_DELAY_MS = parseInt(process.env.OPENCODE_ITHROTTLE_DELAY_MS || '5', 10);
+
+function throttle(iteration) {
+  if (iteration % ITHROTTLE_BATCH === 0) {
+    return new Promise((r) => setTimeout(r, ITHROTTLE_DELAY_MS));
+  }
+  return Promise.resolve();
+}
+
 (async () => {
   const bundle = await srv.buildAttrBundle(workerData.now || Date.now());
   bundle.builtAt = workerData.now || Date.now();

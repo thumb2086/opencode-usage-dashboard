@@ -343,8 +343,13 @@ const ATTR_TTL = 300000;
 // Minimum interval between full scans, regardless of DB revision changes.
 // Prevents excessive scanning when opencode is actively writing (WAL checkpoints
 // change DB mtime/size constantly, making revision appear changed every time).
-// Default 15 minutes — configurable via OPENCODE_MIN_SCAN_INTERVAL_MS.
-const MIN_SCAN_INTERVAL = parseInt(process.env.OPENCODE_MIN_SCAN_INTERVAL_MS || String(15 * 60 * 1000), 10);
+// Default 30 minutes — configurable via OPENCODE_MIN_SCAN_INTERVAL_MS.
+const MIN_SCAN_INTERVAL = parseInt(process.env.OPENCODE_MIN_SCAN_INTERVAL_MS || String(30 * 60 * 1000), 10);
+
+// I/O throttling for the attr worker: process N rows, then yield for M ms.
+// Prevents the worker from saturating the disk. Configurable via env vars.
+const ITHROTTLE_BATCH = parseInt(process.env.OPENCODE_ITHROTTLE_BATCH || '1000', 10); // rows per yield
+const ITHROTTLE_DELAY_MS = parseInt(process.env.OPENCODE_ITHROTTLE_DELAY_MS || '5', 10); // ms to sleep
 // Tool counts change slowly but the embedded-content scan costs ~2.8s on a
 // 2.7GB live DB, so it is computed by the stats WORKER (see spawnAttrWorker)
 // and only ever READ here. `fromWorker` marks worker-supplied data, which is
@@ -403,13 +408,14 @@ async function attributeUsage(startMs, endMs, periodStartsMs) {
     };
   });
 
-  const rows = dbQuery(`SELECT time_created AS t, session_id AS sid, data FROM ${schema.message} WHERE time_created >= ${startMs} AND time_created < ${endMs};`) || [];
+  // STREAMING iteration with throttling: use .iterate() instead of .all()
+  // to avoid loading all rows into memory at once. Throttle every ITHROTTLE_BATCH rows.
+  const stmt = db.prepare(`SELECT time_created AS t, session_id AS sid, data FROM ${schema.message} WHERE time_created >= ${startMs} AND time_created < ${endMs};`);
   let processed = 0;
-  for (const row of rows) {
+  for (const row of stmt.iterate()) {
     let d = null;
     try { d = JSON.parse(row.data); } catch (_) { d = null; }
-    processed++;
-    if (!d) continue;
+    if (!d) { processed++; continue; }
     const key = localDayKey(new Date(row.t));
     const dayMs = dateOfKey(key).getTime();
     const tk = d.tokens || {};
@@ -472,9 +478,12 @@ async function attributeUsage(startMs, endMs, periodStartsMs) {
       const ag = sl.msgAgentAgg[agent] || (sl.msgAgentAgg[agent] = { o: 0, ms: 0 });
       if (hasDur) { ag.o += ov; ag.ms += (t1 - t0); }
     }
-    if ((processed & 0x3fff) === 0) await yieldToLoop();
+
+    // Throttle: yield every ITHROTTLE_BATCH rows to avoid saturating disk
+    if ((++processed % ITHROTTLE_BATCH) === 0) await throttle(processed);
   }
 
+  // Session table: smaller, keep as-is (only ~800 rows)
   const srows = dbQuery(`SELECT id, agent, COALESCE(json_extract(model, '$.providerID'), 'unknown') AS provider, COALESCE(json_extract(model, '$.id'), 'unknown') AS model, time_created AS tc, time_updated AS tu, tokens_input AS si, tokens_output AS so, tokens_reasoning AS sr, tokens_cache_read AS scr, tokens_cache_write AS scw, cost AS sc FROM ${schema.session} WHERE time_updated >= ${startMs} AND time_created < ${endMs};`) || [];
   let sessProcessed = 0;
   for (const s of srows) {
@@ -574,6 +583,14 @@ let attrLastSave = 0;
 let attrLastScan = 0; // timestamp of last scan start
 // Set OPENCODE_ATTR_SCAN_DISABLED=1 to disable background attr scans entirely
 const ATTR_SCAN_DISABLED = process.env.OPENCODE_ATTR_SCAN_DISABLED === '1';
+
+// Throttle helper: yields to event loop after N iterations
+function throttle(iteration) {
+  if (iteration % ITHROTTLE_BATCH === 0) {
+    return new Promise((r) => setTimeout(r, ITHROTTLE_DELAY_MS));
+  }
+  return Promise.resolve();
+}
 const EMPTY_ATTR = {
   perDay: {}, perModel: {}, perAgent: {}, perSession: {},
   totals: { sessions: 0, messages: 0, input: 0, output: 0, reasoning: 0, cacheRead: 0, cacheWrite: 0, cost: 0 },
@@ -732,6 +749,8 @@ function getAttrPeriod(startMs) {
 // cache stores, so the swap-in path is identical either way.
 function refreshAttrBundle() {
   if (attrBundlePending) return attrAllCache ? attrAllCache.a : null;
+  // Allow completely disabling background attribute scans via env var.
+  if (ATTR_SCAN_DISABLED) return attrAllCache ? attrAllCache.a : null;
   const now = Date.now();
   if (attrAllCache && now - attrAllCache.at < ATTR_TTL) return attrAllCache.a;
   // Enforce minimum scan interval to prevent excessive scanning when DB
