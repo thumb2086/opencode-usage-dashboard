@@ -1029,7 +1029,9 @@ async function refresh() {
       state.error = state.error || 'failed to read database';
     }
   } catch (e) {
+    console.error("refresh error:", e);
     state.error = e.message;
+    state.loading = false;
   } finally {
     state.busy = false;
   }
