@@ -285,12 +285,13 @@ chk('pricing basis shows — for unpriced rows',
 
 // --- trend / tools / raw ---
 const nLabels = (stats.trend && stats.trend.labels) || [];
-chk('trend renders one column per bucket', (htmlOf('trend-tokens').match(/class="col"/g) || []).length === nLabels.length);
+// Each series now has its own chart: trend-input, trend-reasoning, trend-cache, trend-cost
+chk('trend renders one column per bucket', (htmlOf('trend-input').match(/class="col"/g) || []).length === nLabels.length);
 chk('trend x-axis puts today (newest bucket) leftmost',
   nLabels.length > 0 &&
-  stripTags((htmlOf('trend-token-x').match(/<span[^>]*>([^<]*)<\/span>/) || ['', ''])[1]) === nLabels[0] &&
-  stripTags((htmlOf('trend-token-x').match(/<span[^>]*>([^<]*)<\/span>/g) || []).pop().replace(/<[^>]*>/g, '')) === nLabels[nLabels.length - 1]);
-chk('trend tooltip carries per-day detail', htmlOf('trend-tokens').includes('title='));
+  stripTags((htmlOf('trend-input-x').match(/<span[^>]*>([^<]*)<\/span>/) || ['', ''])[1]) === nLabels[0] &&
+  stripTags((htmlOf('trend-input-x').match(/<span[^>]*>([^<]*)<\/span>/g) || []).pop().replace(/<[^>]*>/g, '')) === nLabels[nLabels.length - 1]);
+chk('trend tooltip carries per-day detail', htmlOf('trend-input').includes('title='));
 chk('trend cost chart or all-free note', htmlOf('trend-cost').length > 0 || textOf('costZeroNote') === STRINGS.en.allFree);
 chk('heatmap grid renders cells', (htmlOf('heatmap-grid').match(/class="hm-cell/g) || []).length > 0);
 chk('heatmap legend present', htmlOf('heatmap-legend') ? true : (html.includes('heatmap-legend') || html.includes('hm-cell hm-4')));
@@ -311,7 +312,7 @@ chk('tools disclose they cannot be sliced by scope', /tool counts are all-time/.
 chk('raw text statement preserved', textOf('rawText').includes('OPENCODE USAGE STATEMENT') && textOf('rawText').includes('Period:'));
 
 // --- no NaN / undefined leaking ---
-const rendered = ['bd-models', 'bd-agents', 'bd-sessions', 'pricing-rows', 'tool-bars', 'trend-tokens', 'rawText']
+const rendered = ['bd-models', 'bd-agents', 'bd-sessions', 'pricing-rows', 'tool-bars', 'trend-input', 'rawText']
   .map(htmlOf).join('\n') + ['hl-tokens', 'hl-in', 'hl-out', 'hl-reasoning', 'hl-cache', 'hl-cost', 'hl-market', 'hl-saved']
     .map(textOf).join(' ');
 chk('no NaN in rendered output', !/NaN/.test(rendered));
@@ -343,7 +344,7 @@ chk('headline repainted for new scope', textOf('hl-tokens') && textOf('hl-tokens
 chk('breakdown repainted for new scope', rowsIn('bd-models').length === rMtd.providers.length && rMtd.providers.length > 0);
 chk('pricing repainted for new scope', rowsIn('pricing-rows').length === rMtd.providers.length);
 chk('raw text repainted for new scope', textOf('rawText').includes('OPENCODE USAGE STATEMENT'));
-chk('trend repainted for new scope', htmlOf('trend-tokens').includes('title='));
+chk('trend repainted for new scope', htmlOf('trend-input').includes('title='));
 
 await win.__setScope(-1);
 await tick(12);
