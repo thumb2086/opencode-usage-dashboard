@@ -8,6 +8,7 @@ const blessed = require('blessed');
 const http = require('http');
 const { spawn } = require('child_process');
 const path = require('path');
+const pkg = require('./package.json');
 
 class TUIServer {
   constructor(options = {}) {
@@ -87,14 +88,27 @@ class TUIServer {
         this.fetchData('/api/stats?days=90')
       ]);
 
+      // Parse stats response
       const statsData = stats.data || stats;
       const overview = statsData.overview || {};
       const cost = statsData.cost || {};
       const tools = statsData.tools || [];
 
+      // Parse report for projects (from agents)
       const reportData = report.report || report;
-      const projects = reportData.projects || [];
+      const agents = reportData.agents || [];
+      // Convert agents to projects format
+      const projects = agents
+        .filter(a => a.sessions > 0)
+        .map(a => ({
+          name: a.agent,
+          mainSessionCount: a.sessions,
+          sessionCount: a.sessions,
+          tokens: { total: a.tok_in + a.tok_out + a.tok_reasoning + a.cache_read },
+          cost: a.cost || 0
+        }));
 
+      // Parse trend
       const trendData = trend.trend || trend;
 
       this.data = {
@@ -104,7 +118,7 @@ class TUIServer {
           days: overview.days || 0,
           messages: overview.messages || 0
         },
-        projects: Array.isArray(projects) ? projects : [],
+        projects: projects,
         models: Array.isArray(models) ? models : [],
         trend: trendData,
         tokens: {
@@ -144,7 +158,7 @@ class TUIServer {
   initTUI() {
     this.screen = blessed.screen({
       smartCSR: true,
-      title: 'opencode-statboard TUI',
+      title: 'opencode-statboard TUI v' + pkg.version,
       fullUnicode: true,
       autoPadding: true
     });
@@ -159,16 +173,13 @@ class TUIServer {
     this.screen.key(['S-tab'], () => this.prevView());
     this.screen.key(['r'], () => this.pollData());
     this.screen.key(['w'], () => this.openWeb());
-    this.screen.key(['l'], () => {
-      this.layout.log.hidden = !this.layout.log.hidden;
-      this.screen.render();
-    });
 
     this.createLayout();
     this.render();
   }
 
   createLayout() {
+    // Header - fixed at top, 2 lines
     this.layout.header = blessed.box({
       top: 0,
       left: 0,
@@ -177,9 +188,10 @@ class TUIServer {
       tags: true,
       border: { type: 'line' },
       style: { border: { fg: 'cyan' } },
-      content: '{center}{bold}opencode-statboard{/bold} TUI  |  [1]Overview [2]Projects [3]Models [4]Trend [5]Heatmap [W]Web [R]Refresh [Q]Quit{/center}'
+      content: '{center}{bold}opencode-statboard v' + pkg.version + '{/bold}  TUI  |  [1]Overview [2]Projects [3]Models [4]Trend [5]Heatmap [W]Web [R]Refresh [Q]Quit{/center}'
     });
 
+    // Main content - fills middle area
     this.layout.main = blessed.box({
       top: 2,
       bottom: 2,
@@ -195,6 +207,7 @@ class TUIServer {
       mouse: true
     });
 
+    // Footer - fixed at bottom, 2 lines
     this.layout.footer = blessed.box({
       bottom: 0,
       left: 0,
@@ -203,36 +216,14 @@ class TUIServer {
       tags: true,
       border: { type: 'line' },
       style: { border: { fg: 'green' } },
-      content: '{center}Last update: {bold}never{/bold}  |  View: {bold}overview{/bold}  |  W:Web R:Refresh L:Logs Q:Quit{/center}'
-    });
-
-    this.layout.log = blessed.log({
-      bottom: 0,
-      left: 0,
-      width: '100%',
-      height: '45%',
-      tags: true,
-      border: { type: 'line' },
-      style: { border: { fg: 'yellow' } },
-      scrollable: true,
-      alwaysScroll: true,
-      keys: true,
-      vi: true,
-      mouse: true,
-      hidden: true
+      content: '{center}Last update: {bold}never{/bold}  |  View: {bold}overview{/bold}  |  W:Web R:Refresh Q:Quit{/center}'
     });
 
     this.screen.append(this.layout.header);
     this.screen.append(this.layout.main);
     this.screen.append(this.layout.footer);
-    this.screen.append(this.layout.log);
 
-    if (this._earlyLogs) {
-      for (const log of this._earlyLogs) {
-        this.layout.log.log('{gray}' + log + '{/gray}');
-      }
-      this._earlyLogs = null;
-    }
+    this.render();
   }
 
   switchView(view) {
@@ -270,7 +261,7 @@ class TUIServer {
       heatmap: 'Heatmap'
     };
     this.layout.footer.setContent(
-      '{center}Last update: {bold}' + time + '{/bold}  |  View: {bold}' + (viewLabels[this.currentView] || this.currentView) + '{/bold}  |  W:Web R:Refresh L:Logs Q:Quit{/center}'
+      '{center}Last update: {bold}' + time + '{/bold}  |  View: {bold}' + (viewLabels[this.currentView] || this.currentView) + '{/bold}  |  W:Web R:Refresh Q:Quit{/center}'
     );
   }
 
@@ -278,7 +269,6 @@ class TUIServer {
     const url = 'http://' + this.host + ':' + this.port;
     const opener = process.platform === 'win32' ? 'start' : process.platform === 'darwin' ? 'open' : 'xdg-open';
     spawn(opener, [url], { detached: true, stdio: 'ignore' }).unref();
-    this.log('Opened web dashboard: ' + url);
   }
 
   getContentWidth() {
@@ -353,7 +343,7 @@ class TUIServer {
 
     const lines = ['{center}{bold}\u2501\u2501\u2501 PROJECTS \u2501\u2501\u2501{/bold}{/center}', ''];
     lines.push('{bold}{Project:<45} {Sessions:>10} {Tokens:>18} {Cost:>14}{/bold}');
-    lines.push('{gray}\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500{/gray}');
+    lines.push('{gray}\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500{/gray}');
 
     for (const p of projects.slice(0, 50)) {
       const name = p.name.length > 43 ? p.name.slice(0, 40) + '...' : p.name;
@@ -381,7 +371,7 @@ class TUIServer {
 
     const lines = ['{center}{bold}\u2501\u2501\u2501 MODELS \u2501\u2501\u2501{/bold}{/center}', ''];
     lines.push('{bold}{Model:<40} {Provider:<14} {Tokens:>18} {Cost:>12} {Speed:>10}{/bold}');
-    lines.push('{gray}\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500{/gray}');
+    lines.push('{gray}\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500{/gray}');
 
     for (const m of models.slice(0, 30)) {
       const name = m.name.length > 38 ? m.name.slice(0, 35) + '...' : m.name;
@@ -571,12 +561,7 @@ class TUIServer {
 
   log(msg) {
     const time = new Date().toLocaleTimeString();
-    if (this.layout?.log) {
-      this.layout.log.log('{gray}[' + time + ']{/gray} ' + this.escape(msg));
-    } else {
-      if (!this._earlyLogs) this._earlyLogs = [];
-      this._earlyLogs.push('[' + time + '] ' + this.escape(msg));
-    }
+    console.log('[' + time + '] ' + this.escape(msg));
   }
 
   getContentWidth() {
