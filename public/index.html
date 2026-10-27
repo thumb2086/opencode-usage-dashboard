@@ -237,12 +237,24 @@
       <div class="legend">
         <span><i class="sw" style="background:var(--in)"></i><span data-i18n="inputDay">Input / Day</span></span>
         <span><i class="sw" style="background:var(--out)"></i><span data-i18n="outputDay">Output / Day</span></span>
-        <span><i class="sw" style="background:var(--tool)"></i><span data-i18n="reasoningDay">Reasoning / Day</span></span>
-        <span><i class="sw" style="background:var(--cache)"></i><span data-i18n="cacheReadDay">Cache Read / Day</span></span>
         <span id="trendStatus" style="color:var(--cache);font-size:11px"></span>
       </div>
-      <div class="chart" id="trendTokensChart"><div class="bars" id="trend-tokens"></div></div>
-      <div class="trend-x" id="trend-token-x"></div>
+      <div class="chart" id="trendInputChart"><div class="bars" id="trend-input"></div></div>
+      <div class="trend-x" id="trend-input-x"></div>
+    </div>
+    <div>
+      <div class="legend">
+        <span><i class="sw" style="background:var(--tool)"></i><span data-i18n="reasoningDay">Reasoning / Day</span></span>
+      </div>
+      <div class="chart" id="trendReasoningChart"><div class="bars" id="trend-reasoning"></div></div>
+      <div class="trend-x" id="trend-reasoning-x"></div>
+    </div>
+    <div>
+      <div class="legend">
+        <span><i class="sw" style="background:var(--cache)"></i><span data-i18n="cacheReadDay">Cache Read / Day</span></span>
+      </div>
+      <div class="chart" id="trendCacheChart"><div class="bars" id="trend-cache"></div></div>
+      <div class="trend-x" id="trend-cache-x"></div>
     </div>
     <div id="costSection">
       <div class="legend"><span><i class="sw" style="background:var(--cost)"></i><span data-i18n="costDay">Cost / Day</span></span></div>
@@ -727,10 +739,14 @@ function renderPricing(rep) {
 // ---- trend (buckets follow scope; newest day leftmost) -----------------
 function renderTrend(data) {
   if (!data || !data.labels || !data.labels.length) {
-    $('trend-tokens').innerHTML = '';
-    $('trend-token-x').innerHTML = '';
-    $('trend-cost').innerHTML = '';
-    $('trend-cost-x').innerHTML = '';
+    ['trend-input', 'trend-output', 'trend-reasoning', 'trend-cache', 'trend-cost'].forEach(id => {
+      const el = $(id);
+      if (el) el.innerHTML = '';
+    });
+    ['trend-input-x', 'trend-output-x', 'trend-reasoning-x', 'trend-cache-x', 'trend-cost-x'].forEach(id => {
+      const el = $(id);
+      if (el) el.innerHTML = '';
+    });
     $('costZeroNote').style.display = 'none';
     $('trendCostChart').style.display = '';
     $('trend-cost-x').style.display = '';
@@ -749,55 +765,85 @@ function renderTrend(data) {
   const sessions = data.sessions || [];
   const n = labels.length;
 
-  const maxAll = Math.max(1, ...input, ...output, ...reasoning, ...cache);
   const genTime = ts ? new Date(ts).toLocaleTimeString(lang === 'zh-TW' ? 'zh-TW' : 'en', { hour12: false }) : '?';
 
-  $('trend-tokens').innerHTML = labels.map((l, i) => {
-    const hi = (input[i] / maxAll) * 100, ho = (output[i] / maxAll) * 100;
-    const hr = (reasoning[i] / maxAll) * 100, hc = (cache[i] / maxAll) * 100;
-    const tip = [l, t('sessionsLabel') + ' ' + day(sessions[i]),
-      t('tIn') + ' ' + fmt(input[i]), t('tOut') + ' ' + fmt(output[i]),
-      t('tReasoning') + ' ' + fmt(reasoning[i]), t('tCache') + ' ' + fmt(cache[i]),
-      t('totalCost') + ' ' + fmtCost(cost[i])].join(' · ') + ' · ' + genTime;
-    return `<div class="col" title="${esc(tip)}">`
-      + '<div style="display:flex;gap:2px;align-items:flex-end;width:100%;height:170px;justify-content:center">'
-      + '<div style="position:relative;width:100%;height:100%">'
-      + `<div class="trend-bar trend-bar-cache" style="height:${Math.max(hc, 1)}%;background:var(--cache)"></div>`
-      + `<div class="trend-bar trend-bar-input" style="height:${Math.max(hi, 1)}%;background:var(--in)"></div>`
-      + `<div class="trend-bar trend-bar-output" style="height:${Math.max(ho, 1)}%;background:var(--out)"></div>`
-      + `<div class="trend-bar trend-bar-reasoning" style="height:${Math.max(hr, 1)}%;background:var(--tool)"></div>`
-      + '</div></div></div>';
-  }).join('');
+  // Each series uses its own max for independent scaling
+  const maxIn = Math.max(1, ...input);
+  const maxOut = Math.max(1, ...output);
+  const maxReasoning = Math.max(1, ...reasoning);
+  const maxCache = Math.max(1, ...cache);
+  const maxCost = Math.max(1, ...cost);
 
-  const labelStep = Math.max(1, Math.ceil(n / 14));
-  $('trend-token-x').innerHTML = labels.map((l, i) =>
-    `<span style="${i % labelStep === 0 ? '' : 'visibility:hidden'}">${esc(l)}</span>`).join('');
+  const chartHeight = 140;
 
-  $('trendStatus').textContent = data.stale ? ' ⟳ ' + t('updating') : '';
+  function renderSeriesChart(containerId, xAxisId, data, maxVal, color, label) {
+    const el = $(containerId);
+    if (!el) return;
+    el.innerHTML = labels.map((l, i) => {
+      const h = maxVal > 0 ? (data[i] / maxVal) * 100 : 0;
+      const tip = [l, t('sessionsLabel') + ' ' + day(sessions[i]),
+        t('tIn') + ' ' + fmt(input[i]), t('tOut') + ' ' + fmt(output[i]),
+        t('tReasoning') + ' ' + fmt(reasoning[i]), t('tCache') + ' ' + fmt(cache[i]),
+        t('totalCost') + ' ' + fmtCost(cost[i])].join(' · ') + ' · ' + genTime;
+      return `<div class="col" title="${esc(tip)}">`
+        + `<div style="display:flex;align-items:flex-end;width:100%;height:${chartHeight}px;justify-content:center">`
+        + `<div style="width:50%;height:${Math.max(h, 1)}%;background:${color};border-radius:2px 2px 0 0"></div>`
+        + '</div></div>';
+    }).join('');
+    const xEl = $(xAxisId);
+    if (xEl) {
+      const labelStep = Math.max(1, Math.ceil(n / 14));
+      xEl.innerHTML = labels.map((l, i) =>
+        `<span style="${i % labelStep === 0 ? '' : 'visibility:hidden'}">${esc(l)}</span>`).join('');
+    }
+  }
+
+  // Input + Output (share chart)
+  const maxInOut = Math.max(maxIn, maxOut);
+  const inputEl = $('trend-input');
+  if (inputEl) {
+    inputEl.innerHTML = labels.map((l, i) => {
+      const hi = maxInOut > 0 ? (input[i] / maxInOut) * 100 : 0;
+      const ho = maxInOut > 0 ? (output[i] / maxInOut) * 100 : 0;
+      const tip = [l, t('sessionsLabel') + ' ' + day(sessions[i]),
+        t('tIn') + ' ' + fmt(input[i]), t('tOut') + ' ' + fmt(output[i]),
+        t('tReasoning') + ' ' + fmt(reasoning[i]), t('tCache') + ' ' + fmt(cache[i]),
+        t('totalCost') + ' ' + fmtCost(cost[i])].join(' · ') + ' · ' + genTime;
+      return `<div class="col" title="${esc(tip)}">`
+        + '<div style="display:flex;gap:2px;align-items:flex-end;width:100%;height:140px;justify-content:center">'
+        + '<div style="position:relative;width:100%;height:100%">'
+        + `<div class="trend-bar trend-bar-input" style="height:${Math.max(hi, 1)}%;background:var(--in)"></div>`
+        + `<div class="trend-bar trend-bar-output" style="height:${Math.max(ho, 1)}%;background:var(--out)"></div>`
+        + '</div></div></div>';
+    }).join('');
+    const labelStep = Math.max(1, Math.ceil(n / 14));
+    const xEl = $('trend-input-x');
+    if (xEl) xEl.innerHTML = labels.map((l, i) =>
+      `<span style="${i % labelStep === 0 ? '' : 'visibility:hidden'}">${esc(l)}</span>`).join('');
+  }
+
+  // Reasoning
+  renderSeriesChart('trend-reasoning', 'trend-reasoning-x', reasoning, maxReasoning, 'var(--tool)', t('tReasoning'));
+  // Cache
+  renderSeriesChart('trend-cache', 'trend-cache-x', cache, maxCache, 'var(--cache)', t('tCache'));
+  // Cost
   const anyCost = cost.some((v) => v > 0);
   const costLegend = $('costSection').querySelector('.legend');
   if (!anyCost) {
     $('trendCostChart').style.display = 'none';
     $('trend-cost-x').style.display = 'none';
-    costLegend.style.display = 'none';
+    if (costLegend) costLegend.style.display = 'none';
     $('costZeroNote').style.display = '';
     $('costZeroNote').textContent = t('allFree');
     return;
   }
-  costLegend.style.display = '';
+  if (costLegend) costLegend.style.display = '';
   $('trendCostChart').style.display = '';
   $('trend-cost-x').style.display = '';
   $('costZeroNote').style.display = 'none';
-  const maxCost = Math.max(...cost);
-  $('trend-cost').innerHTML = labels.map((l, i) => {
-    const h = maxCost > 0 ? (cost[i] / maxCost) * 100 : 0;
-    return `<div class="col" title="${esc(l + ' · ' + fmtCost(cost[i]) + ' · ' + genTime)}">`
-      + '<div style="display:flex;align-items:flex-end;width:100%;height:170px;justify-content:center">'
-      + `<div style="width:50%;height:${Math.max(h, 1)}%;background:var(--cost);border-radius:2px 2px 0 0"></div>`
-      + '</div></div>';
-  }).join('');
-  $('trend-cost-x').innerHTML = labels.map((l, i) =>
-    `<span style="${i % labelStep === 0 ? '' : 'visibility:hidden'}">${esc(l)}</span>`).join('');
+  renderSeriesChart('trend-cost', 'trend-cost-x', cost, maxCost, 'var(--cost)', t('totalCost'));
+
+  $('trendStatus').textContent = data.stale ? ' ⟳ ' + t('updating') : '';
 }
 
 // ---- heatmap (daily token intensity, last 90 days) ---------------------

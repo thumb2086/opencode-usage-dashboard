@@ -549,29 +549,42 @@ class TUIServer {
     const labels = trend.labels;
     const input = trend.input || [];
     const output = trend.output || [];
+    const reasoning = trend.reasoning || [];
+    const cache = trend.cacheRead || [];
     const cost = trend.cost || [];
 
-    const maxVal = Math.max(...input, ...output, 1);
     const height = this.getContentHeight() - 4;
     const width = this.getContentWidth();
+    const chartHeight = Math.max(1, Math.floor(height / 3) - 2); // 3 charts, each ~1/3 height
+
+    // Helper: render one chart with its own max
+    const renderChart = (data, label, color, maxVal) => {
+      if (maxVal <= 0) return '{gray}(no data){/gray}\n';
+      let lines = [];
+      lines.push('{bold}' + label + ':{/bold}');
+      for (let row = chartHeight - 1; row >= 0; row--) {
+        let line = '';
+        const threshold = (row / chartHeight) * maxVal;
+        for (let i = 0; i < width; i++) {
+          const idx = Math.floor(i * labels.length / width);
+          const val = data[idx] || 0;
+          if (val >= threshold) line += '{' + color + '-fg}\u2588{/}';
+          else line += ' ';
+        }
+        lines.push(line);
+      }
+      return lines.join('\n');
+    };
+
+    const maxIn = Math.max(...input, 1);
+    const maxOut = Math.max(...output, 1);
+    const maxCost = Math.max(...cost, 1);
 
     let out = '{center}{bold}\u2501\u2501\u2501 ' + t('trend') + ' \u2501\u2501\u2501{/bold}{/center}\n\n';
-    out += '{bold}Input (cyan) / Output (green) / Cost (yellow){/bold}\n\n';
 
-    for (let row = height - 1; row >= 0; row--) {
-      let line = '';
-      const threshold = (row / height) * maxVal;
-      for (let i = 0; i < width; i++) {
-        const idx = Math.floor(i * labels.length / width);
-        const inVal = input[idx] || 0;
-        const outVal = output[idx] || 0;
-        if (inVal >= threshold && outVal >= threshold) line += '{magenta-fg}\u2588{/magenta-fg}';
-        else if (inVal >= threshold) line += '{cyan-fg}\u2588{/cyan-fg}';
-        else if (outVal >= threshold) line += '{green-fg}\u2588{/green-fg}';
-        else line += ' ';
-      }
-      out += line + '\n';
-    }
+    out += renderChart(input, t('input') + ' (cyan)', 'cyan', maxIn) + '\n';
+    out += renderChart(output, t('output') + ' (green)', 'green', maxOut) + '\n';
+    out += renderChart(cost, t('cost') + ' (yellow)', 'yellow', maxCost) + '\n';
 
     let xAxis = '';
     const labelStep = Math.max(1, Math.ceil(width / 20));
@@ -583,7 +596,7 @@ class TUIServer {
         xAxis += ' ';
       }
     }
-    out += '\n{gray}' + xAxis + '{/gray}\n';
+    out += '{gray}' + xAxis + '{/gray}\n';
 
     const lastIdx = labels.length - 1;
     out += '\n{bold}' + t('today') + ':{/bold} Input: ' + this.formatNumber(input[lastIdx] || 0) + ' | Output: ' + this.formatNumber(output[lastIdx] || 0) + ' | Cost: ' + this.formatCost(cost[lastIdx] || 0);
