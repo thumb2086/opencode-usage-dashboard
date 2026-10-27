@@ -113,10 +113,18 @@ class TUIServer {
       // Parse trend
       const trendData = trend.trend || trend;
 
+      // Handle overview.sessions being a number or object
+      const sessionsValue = overview.sessions;
+      const sessionsObj = typeof sessionsValue === 'number' 
+        ? { main: sessionsValue, total: sessionsValue } 
+        : (sessionsValue || { main: 0, total: 0 });
+      // Projects count from agents in report
+      const projectsCount = projects.length;
+
       this.data = {
         overview: {
-          sessions: overview.sessions || { main: 0, total: 0 },
-          projects: overview.projects || 0,
+          sessions: sessionsObj,
+          projects: projectsCount,
           days: overview.days || 0,
           messages: overview.messages || 0
         },
@@ -162,7 +170,7 @@ class TUIServer {
       smartCSR: true,
       title: 'opencode-statboard TUI v' + pkg.version,
       fullUnicode: true,
-      autoPadding: true
+      autoPadding: false
     });
 
     this.screen.key(['q', 'C-c', 'escape'], () => this.shutdown());
@@ -197,6 +205,7 @@ class TUIServer {
       bottom: 2,
       left: 0,
       width: '100%',
+      height: '100%-4',
       tags: true,
       border: { type: 'line' },
       style: { border: { fg: 'blue' } },

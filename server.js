@@ -1535,33 +1535,22 @@ setInterval(() => {
   try { autoBackupIfDue(); } catch (_) {}
 }, CACHE_CLEANUP_MS);
 
-function tryListen(port, maxPort) {
-  return new Promise((resolve) => {
-    server.once('error', (e) => {
-      if (e.code === 'EADDRINUSE') {
-        console.log(`port ${port} in use, trying ${port + 1}...`);
-        server.removeAllListeners('error');
-        if (port < (maxPort || port + 5)) {
-          resolve(tryListen(port + 1, maxPort));
-        } else {
-          console.error(`all ports ${PORT}-${maxPort || PORT + 5} in use`);
-          process.exit(1);
-        }
-      } else {
-        console.error(e);
-        process.exit(1);
-      }
+async function startServer() {
+  return new Promise((resolve, reject) => {
+    server.listen(PORT, '127.0.0.1', () => {
+      console.log('opencode stats dashboard: http://127.0.0.1:' + PORT);
+      resolve(PORT);
     });
-    server.listen(port, '127.0.0.1', () => {
-      console.log(`opencode stats dashboard: http://127.0.0.1:${port}`);
-      resolve(port);
+    server.once('error', (e) => {
+      console.error('Server error:', e.message);
+      process.exit(1);
     });
   });
 }
 
 (async () => {
   try {
-    const actualPort = await tryListen(PORT, PORT + 5);
+    await startServer();
     // Serve the persisted bundle + tool counts IMMEDIATELY. Nothing on this
     // path touches the live DB, so the first request answers in milliseconds
     // instead of waiting out a 3-29s scan.
