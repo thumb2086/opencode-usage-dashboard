@@ -1,21 +1,26 @@
 {
   "name": "opencode-statboard",
-  "version": "2.9.6",
+  "version": "2.9.7",
   "description": "Real-time dashboard for opencode token usage and cost statistics",
   "main": "server.js",
   "bin": {
-    "opencode-dashboard": "server.js"
+    "opencode-dashboard": "server.js",
+    "opencode-tui": "tui-dashboard.js"
   },
   "scripts": {
     "start": "node server.js",
-    "test": "node --check server.js && node --check check-lib.js && node --check pricing.js && node --check check-stats-verify.js && node --check check-trend-verify.js && node --check check-report-verify.js && node --check check-frontend-smoke.js"
+    "tui": "node tui-dashboard.js",
+    "tui:web": "node tui-dashboard.js --web",
+    "both": "node tui-dashboard.js --both",
+    "test": "node --check server.js && node --check check-lib.js && node --check pricing.js && node --check check-stats-verify.js && node --check check-trend-verify.js && node --check check-report-verify.js && node --check check-frontend-smoke.js && node --check tui-dashboard.js"
   },
   "keywords": [
     "opencode",
     "dashboard",
     "tokens",
     "usage",
-    "statistics"
+    "statistics",
+    "tui"
   ],
   "author": "thumb2086",
   "license": "MIT",
@@ -24,6 +29,7 @@
     "url": "git+https://github.com/thumb2086/opencode-usage-dashboard.git"
   },
   "dependencies": {
-    "better-sqlite3": "^13.0.3"
+    "better-sqlite3": "^13.0.3",
+    "blessed": "^0.1.81"
   }
 }
