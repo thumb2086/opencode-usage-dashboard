@@ -92,18 +92,37 @@
   .trend-wrap > div { flex: 1; min-width: 300px; }
   .trend-wrap #costSection { min-width: 240px; }
   .heatmap-wrap { display: flex; flex-direction: column; gap: 8px; }
-  .heatmap-months { display: flex; gap: 2px; padding-left: 22px; font-size: 10px; color: var(--muted); }
+  .heatmap-months { display: flex; gap: 2px; padding-left: 28px; font-size: 11px; color: var(--muted); }
   .heatmap-months span { flex: 1; text-align: left; overflow: visible; white-space: nowrap; }
   .heatmap-grid { display: flex; gap: 2px; }
   .heatmap-grid .hm-week { display: flex; flex-direction: column; gap: 2px; }
-  .hm-cell { width: 11px; height: 11px; border-radius: 2px; background: var(--card2); border: 1px solid var(--border); box-sizing: border-box; }
+  .hm-cell { width: 14px; height: 14px; border-radius: 2px; background: var(--card2); border: 1px solid var(--border); box-sizing: border-box; }
+  /* Heatmap color scale: 10 levels from cool to hot */
   .hm-cell.hm-0 { background: var(--card2); }
-  .hm-cell.hm-1 { background: color-mix(in srgb, var(--in) 22%, var(--card2)); }
-  .hm-cell.hm-2 { background: color-mix(in srgb, var(--in) 45%, var(--card2)); }
-  .hm-cell.hm-3 { background: color-mix(in srgb, var(--in) 70%, var(--card2)); }
-  .hm-cell.hm-4 { background: var(--in); }
-  .heatmap-legend { display: flex; gap: 6px; align-items: center; font-size: 11px; color: var(--muted); }
-  .heatmap-legend .hm-cell { width: 10px; height: 10px; }
+  .hm-cell.hm-1 { background: #0d47a1; }   /* Deep blue */
+  .hm-cell.hm-2 { background: #1565c0; }
+  .hm-cell.hm-2 { background: #1976d2; }
+  .hm-cell.hm-3 { background: #1e88e5; }
+  .hm-cell.hm-4 { background: #2196f3; }
+  .hm-cell.hm-5 { background: #64b5f6; }
+  .hm-cell.hm-6 { background: #90caf9; }
+  .hm-cell.hm-7 { background: #bbdefb; }
+  .hm-cell.hm-8 { background: #e3f2fd; }
+  .hm-cell.hm-9 { background: #fff3e0; }
+  .hm-cell.hm-10 { background: #ffe0b2; }
+  .hm-cell.hm-11 { background: #ffcc80; }
+  .hm-cell.hm-12 { background: #ffb74d; }
+  .hm-cell.hm-13 { background: #ffa726; }
+  .hm-cell.hm-14 { background: #ff9800; }
+  .hm-cell.hm-15 { background: #fb8c00; }
+  .hm-cell.hm-16 { background: #f57c00; }
+  .hm-cell.hm-17 { background: #ef6c00; }
+  .hm-cell.hm-18 { background: #e65100; }
+  .hm-cell.hm-19 { background: #d84315; }
+  .hm-cell.hm-20 { background: #c62828; }
+  .hm-cell.hm-21 { background: #b71c1c; }
+  .heatmap-legend { display: flex; gap: 4px; align-items: center; font-size: 11px; color: var(--muted); flex-wrap: wrap; }
+  .heatmap-legend .hm-cell { width: 12px; height: 12px; }
   .legend { display: flex; gap: 16px; font-size: 12px; color: var(--muted); margin-bottom: 12px; flex-wrap: wrap; }
   .legend span { display: flex; align-items: center; gap: 6px; }
   .sw { width: 12px; height: 12px; border-radius: 3px; display: inline-block; }
@@ -244,10 +263,16 @@
     <div class="heatmap-legend">
       <span data-i18n="less">Less</span>
       <span class="hm-cell hm-0"></span>
-      <span class="hm-cell hm-1"></span>
       <span class="hm-cell hm-2"></span>
-      <span class="hm-cell hm-3"></span>
       <span class="hm-cell hm-4"></span>
+      <span class="hm-cell hm-6"></span>
+      <span class="hm-cell hm-8"></span>
+      <span class="hm-cell hm-10"></span>
+      <span class="hm-cell hm-12"></span>
+      <span class="hm-cell hm-14"></span>
+      <span class="hm-cell hm-16"></span>
+      <span class="hm-cell hm-18"></span>
+      <span class="hm-cell hm-20"></span>
       <span data-i18n="more">More</span>
     </div>
   </div>
@@ -821,9 +846,27 @@ function renderHeatmap(data) {
   const levelOf = (v) => {
     if (!v || v <= 0) return 0;
     const r = v / max;
-    if (r >= 0.75) return 4;
-    if (r >= 0.5) return 3;
-    if (r >= 0.25) return 2;
+    // 20 levels for smooth gradient
+    if (r >= 0.95) return 20;
+    if (r >= 0.90) return 19;
+    if (r >= 0.85) return 18;
+    if (r >= 0.80) return 17;
+    if (r >= 0.75) return 16;
+    if (r >= 0.70) return 15;
+    if (r >= 0.65) return 14;
+    if (r >= 0.60) return 13;
+    if (r >= 0.55) return 12;
+    if (r >= 0.50) return 11;
+    if (r >= 0.45) return 10;
+    if (r >= 0.40) return 9;
+    if (r >= 0.35) return 9;
+    if (r >= 0.30) return 8;
+    if (r >= 0.25) return 7;
+    if (r >= 0.20) return 6;
+    if (r >= 0.15) return 5;
+    if (r >= 0.10) return 4;
+    if (r >= 0.05) return 3;
+    if (r >= 0.02) return 2;
     return 1;
   };
   grid.innerHTML = weeks.map((w) => '<div class="hm-week">' +
@@ -924,12 +967,28 @@ async function poll() {
     const time = new Date().toLocaleTimeString(lang === 'zh-TW' ? 'zh-TW' : 'en', { hour12: false });
     lastUpdatedText = t('lastUpdated') + ' ' + time + ' (' + t('dataAgo') + ' ' + ago + 's)';
     $('updated').textContent = lastUpdatedText;
+    refreshCurrentReport(); // auto-refresh report panels
     return j;
   } catch (e) {
     $('updated').textContent = t('connFail') + ': ' + e.message;
     lastUpdatedText = $('updated').textContent;
     return null;
   }
+}
+
+// Auto-refresh the current scope report when poll succeeds (so all panels stay fresh)
+// Debounced to avoid hammering the API if poll runs frequently
+let reportRefreshDebounce = null;
+async function refreshCurrentReport() {
+  if (reportRefreshDebounce) clearTimeout(reportRefreshDebounce);
+  reportRefreshDebounce = setTimeout(async () => {
+    if (window.__lastReport) {
+      try {
+        const r = await loadReport(scopeDays);
+        if (r) renderReport(r);
+      } catch (_) {}
+    }
+  }, 500); // debounce 500ms
 }
 
 let reportLoading = false;
