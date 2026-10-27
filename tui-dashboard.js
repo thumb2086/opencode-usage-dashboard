@@ -325,7 +325,7 @@ class TUIServer {
       top: 0,
       left: 0,
       width: '100%',
-      height: 2,
+      height: 3,
       tags: true,
       border: { type: 'line' },
       style: { border: { fg: 'cyan' } },
@@ -333,8 +333,8 @@ class TUIServer {
     });
 
     this.layout.main = blessed.box({
-      top: 2,
-      bottom: 2,
+      top: 3,
+      bottom: 3,
       left: 0,
       width: '100%',
       tags: true,
@@ -351,7 +351,7 @@ class TUIServer {
       bottom: 0,
       left: 0,
       width: '100%',
-      height: 2,
+      height: 3,
       tags: true,
       border: { type: 'line' },
       style: { border: { fg: 'green' } },
@@ -410,7 +410,7 @@ class TUIServer {
   getContentHeight() {
     const mainHeight = this.layout.main.height;
     if (typeof mainHeight === 'number') return mainHeight - 2;
-    return this.screen.height - 6; // header(2) + footer(2) + borders(2)
+    return this.screen.height - 8; // header(3) + footer(3) + borders(2)
   }
 
   render() {
