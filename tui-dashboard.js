@@ -638,8 +638,7 @@ class TUIServer {
       out += line + '\n';
     }
 
-    out += '\n{gray}Less  \u2591\u2591\u2592\u2592\u2593\u2593\u2588\u2588  More  (max: ' + this.formatNumber(max) + '){/gray}';
-    return out;
+    out += '\n{gray}Less  {cyan-fg}\u00B7\u00B7{/}{green-fg}\u2591\u2591{/}{yellow-fg}\u2592\u2592{/}{magenta-fg}\u2593\u2593{/}{red-fg}\u2588\u2588{/}  More  (max: ' + this.formatNumber(max) + '){/gray}';
     return out;
   }
 
