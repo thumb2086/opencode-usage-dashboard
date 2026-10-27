@@ -146,7 +146,6 @@ class TUIServer {
       smartCSR: true,
       title: 'opencode-statboard TUI',
       fullUnicode: true,
-      dockBorders: true,
       autoPadding: true
     });
 
@@ -170,7 +169,6 @@ class TUIServer {
   }
 
   createLayout() {
-    // 更緊湊的 header
     this.layout.header = blessed.box({
       top: 0,
       left: 0,
@@ -182,12 +180,11 @@ class TUIServer {
       content: '{center}{bold}opencode-statboard{/bold} TUI  |  [1]Overview [2]Projects [3]Models [4]Trend [5]Heatmap [W]Web [R]Refresh [Q]Quit{/center}'
     });
 
-    // 主內容區域 - 佔據絕大部分空間
     this.layout.main = blessed.box({
       top: 2,
+      bottom: 2,
       left: 0,
       width: '100%',
-      height: '100%-4', // 只留 header(2) + footer(2)
       tags: true,
       border: { type: 'line' },
       style: { border: { fg: 'blue' } },
@@ -198,7 +195,6 @@ class TUIServer {
       mouse: true
     });
 
-    // 更緊湊的 footer
     this.layout.footer = blessed.box({
       bottom: 0,
       left: 0,
@@ -385,7 +381,7 @@ class TUIServer {
 
     const lines = ['{center}{bold}\u2501\u2501\u2501 MODELS \u2501\u2501\u2501{/bold}{/center}', ''];
     lines.push('{bold}{Model:<40} {Provider:<14} {Tokens:>18} {Cost:>12} {Speed:>10}{/bold}');
-    lines.push('{gray}\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500{/gray}');
+    lines.push('{gray}\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500{/gray}');
 
     for (const m of models.slice(0, 30)) {
       const name = m.name.length > 38 ? m.name.slice(0, 35) + '...' : m.name;
@@ -416,7 +412,7 @@ class TUIServer {
     const cost = trend.cost || [];
 
     const maxVal = Math.max(...input, ...output, 1);
-    const height = this.getContentHeight() - 4; // 留標題和底部空間
+    const height = this.getContentHeight() - 4;
     const width = this.getContentWidth();
 
     let out = '{center}{bold}\u2501\u2501\u2501 TREND (90 days) \u2501\u2501\u2501{/bold}{/center}\n\n';
@@ -529,7 +525,6 @@ class TUIServer {
     if (r >= 0.75) return 16;
     if (r >= 0.70) return 15;
     if (r >= 0.65) return 14;
-    if (r >= 0.60) return 13;
     if (r >= 0.60) return 13;
     if (r >= 0.55) return 12;
     if (r >= 0.50) return 11;
