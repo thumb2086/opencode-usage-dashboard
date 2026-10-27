@@ -441,6 +441,15 @@ class TUIServer {
     }
   }
 
+  fillScreen(lines) {
+    const height = this.getContentHeight();
+    const width = this.getContentWidth();
+    const contentWidth = width - 2; // account for borders
+    const contentHeight = height - 2;
+    while (lines.length < contentHeight) lines.push('');
+    return lines.map(l => l.padEnd(contentWidth)).join('\n');
+  }
+
   renderOverview() {
     const ov = this.data;
     const t = this.t.bind(this);
@@ -472,7 +481,7 @@ class TUIServer {
       '{bold}' + t('avgCostDay') + ':{/bold} ' + this.formatCost(cost.avgCostPerDay || 0),
       '{bold}' + t('avgTokensDay') + ':{/bold} ' + this.formatNumber(cost.avgTokensPerDay || 0)
     ];
-    return lines.join('\n');
+    return this.fillScreen(lines);
   }
 
   renderProjects() {
@@ -501,7 +510,7 @@ class TUIServer {
       lines.push('{gray}... ' + t('noData') + ' ' + (projects.length - 50) + ' ' + t('projects') + '{/gray}');
     }
 
-    return lines.join('\n');
+    return this.fillScreen(lines);
   }
 
   renderModels() {
@@ -527,7 +536,7 @@ class TUIServer {
       lines.push(namePad + ' ' + provPad + ' ' + tokPad + ' ' + costPad + ' ' + speedPad);
     }
 
-    return lines.join('\n');
+    return this.fillScreen(lines);
   }
 
   renderTrend() {
