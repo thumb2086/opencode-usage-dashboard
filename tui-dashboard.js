@@ -87,17 +87,14 @@ class TUIServer {
         this.fetchData('/api/stats?days=90')
       ]);
 
-      // Parse stats response - data is nested under .data
       const statsData = stats.data || stats;
       const overview = statsData.overview || {};
       const cost = statsData.cost || {};
       const tools = statsData.tools || [];
 
-      // Parse report for projects
       const reportData = report.report || report;
       const projects = reportData.projects || [];
 
-      // Parse trend
       const trendData = trend.trend || trend;
 
       this.data = {
@@ -173,22 +170,24 @@ class TUIServer {
   }
 
   createLayout() {
+    // 更緊湊的 header
     this.layout.header = blessed.box({
       top: 0,
       left: 0,
       width: '100%',
-      height: 3,
+      height: 2,
       tags: true,
       border: { type: 'line' },
       style: { border: { fg: 'cyan' } },
-      content: '{center}{bold}opencode-statboard{/bold}  TUI Dashboard  |  [1]Overview [2]Projects [3]Models [4]Trend [5]Heatmap [W]Web [R]Refresh [Q]Quit{/center}'
+      content: '{center}{bold}opencode-statboard{/bold} TUI  |  [1]Overview [2]Projects [3]Models [4]Trend [5]Heatmap [W]Web [R]Refresh [Q]Quit{/center}'
     });
 
+    // 主內容區域 - 佔據絕大部分空間
     this.layout.main = blessed.box({
-      top: 3,
+      top: 2,
       left: 0,
       width: '100%',
-      height: '100%-6',
+      height: '100%-4', // 只留 header(2) + footer(2)
       tags: true,
       border: { type: 'line' },
       style: { border: { fg: 'blue' } },
@@ -199,22 +198,23 @@ class TUIServer {
       mouse: true
     });
 
+    // 更緊湊的 footer
     this.layout.footer = blessed.box({
       bottom: 0,
       left: 0,
       width: '100%',
-      height: 3,
+      height: 2,
       tags: true,
       border: { type: 'line' },
       style: { border: { fg: 'green' } },
-      content: '{center}Last update: {bold}never{/bold}  |  View: {bold}overview{/bold}  |  Press {bold}W{/bold} to open Web dashboard  |  {bold}L{/bold} Toggle logs{/center}'
+      content: '{center}Last update: {bold}never{/bold}  |  View: {bold}overview{/bold}  |  W:Web R:Refresh L:Logs Q:Quit{/center}'
     });
 
     this.layout.log = blessed.log({
       bottom: 0,
       left: 0,
       width: '100%',
-      height: '40%',
+      height: '45%',
       tags: true,
       border: { type: 'line' },
       style: { border: { fg: 'yellow' } },
@@ -274,7 +274,7 @@ class TUIServer {
       heatmap: 'Heatmap'
     };
     this.layout.footer.setContent(
-      '{center}Last update: {bold}' + time + '{/bold}  |  View: {bold}' + (viewLabels[this.currentView] || this.currentView) + '{/bold}  |  Press {bold}W{/bold} to open Web dashboard  |  {bold}L{/bold} Toggle logs{/center}'
+      '{center}Last update: {bold}' + time + '{/bold}  |  View: {bold}' + (viewLabels[this.currentView] || this.currentView) + '{/bold}  |  W:Web R:Refresh L:Logs Q:Quit{/center}'
     );
   }
 
@@ -288,6 +288,11 @@ class TUIServer {
   getContentWidth() {
     const mainWidth = this.layout.main.width;
     return typeof mainWidth === 'number' ? mainWidth - 2 : this.screen.width - 4;
+  }
+
+  getContentHeight() {
+    const mainHeight = this.layout.main.height;
+    return typeof mainHeight === 'number' ? mainHeight - 2 : this.screen.height - 6;
   }
 
   render() {
@@ -351,24 +356,24 @@ class TUIServer {
     if (projects.length === 0) return '{center}No projects{/center}';
 
     const lines = ['{center}{bold}\u2501\u2501\u2501 PROJECTS \u2501\u2501\u2501{/bold}{/center}', ''];
-    lines.push('{bold}{Project:<40} {Sessions:>10} {Tokens:>15} {Cost:>12}{/bold}');
-    lines.push('{gray}\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500{/gray}');
+    lines.push('{bold}{Project:<45} {Sessions:>10} {Tokens:>18} {Cost:>14}{/bold}');
+    lines.push('{gray}\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500{/gray}');
 
-    for (const p of projects.slice(0, 30)) {
-      const name = p.name.length > 38 ? p.name.slice(0, 35) + '...' : p.name;
+    for (const p of projects.slice(0, 50)) {
+      const name = p.name.length > 43 ? p.name.slice(0, 40) + '...' : p.name;
       const tokens = this.formatNumber(p.tokens?.total || 0);
       const cost = this.formatCost(p.cost || 0);
       const sessions = (p.mainSessionCount || 0) + '/' + (p.sessionCount || 0);
-      const namePad = name.padEnd(40);
+      const namePad = name.padEnd(45);
       const sessPad = sessions.padStart(10);
-      const tokPad = this.formatNumber(p.tokens?.total || 0).padStart(15);
-      const costPad = this.formatCost(p.cost || 0).padStart(12);
+      const tokPad = this.formatNumber(p.tokens?.total || 0).padStart(18);
+      const costPad = this.formatCost(p.cost || 0).padStart(14);
       lines.push(namePad + ' ' + sessPad + ' ' + tokPad + ' ' + costPad);
     }
 
-    if (projects.length > 30) {
+    if (projects.length > 50) {
       lines.push('');
-      lines.push('{gray}... and ' + (projects.length - 30) + ' more projects{/gray}');
+      lines.push('{gray}... and ' + (projects.length - 50) + ' more projects{/gray}');
     }
 
     return lines.join('\n');
@@ -379,20 +384,20 @@ class TUIServer {
     if (models.length === 0) return '{center}No models{/center}';
 
     const lines = ['{center}{bold}\u2501\u2501\u2501 MODELS \u2501\u2501\u2501{/bold}{/center}', ''];
-    lines.push('{bold}{Model:<35} {Provider:<12} {Tokens:>15} {Cost:>10} {Speed:>8}{/bold}');
-    lines.push('{gray}\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500{/gray}');
+    lines.push('{bold}{Model:<40} {Provider:<14} {Tokens:>18} {Cost:>12} {Speed:>10}{/bold}');
+    lines.push('{gray}\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500{/gray}');
 
-    for (const m of models.slice(0, 20)) {
-      const name = m.name.length > 33 ? m.name.slice(0, 30) + '...' : m.name;
-      const provider = (m.provider || 'unknown').slice(0, 10);
+    for (const m of models.slice(0, 30)) {
+      const name = m.name.length > 38 ? m.name.slice(0, 35) + '...' : m.name;
+      const provider = (m.provider || 'unknown').slice(0, 12);
       const tokens = this.formatNumber(m.tokens?.total || m.tokens || 0);
       const cost = this.formatCost(m.cost || 0);
       const speed = m.speed ? m.speed.toFixed(1) + ' tok/s' : '\u2014';
-      const namePad = name.padEnd(35);
-      const provPad = provider.padEnd(12);
-      const tokPad = tokens.padStart(15);
-      const costPad = cost.padStart(10);
-      const speedPad = speed.padStart(8);
+      const namePad = name.padEnd(40);
+      const provPad = provider.padEnd(14);
+      const tokPad = tokens.padStart(18);
+      const costPad = cost.padStart(12);
+      const speedPad = speed.padStart(10);
       lines.push(namePad + ' ' + provPad + ' ' + tokPad + ' ' + costPad + ' ' + speedPad);
     }
 
@@ -411,7 +416,7 @@ class TUIServer {
     const cost = trend.cost || [];
 
     const maxVal = Math.max(...input, ...output, 1);
-    const height = 12;
+    const height = this.getContentHeight() - 4; // 留標題和底部空間
     const width = this.getContentWidth();
 
     let out = '{center}{bold}\u2501\u2501\u2501 TREND (90 days) \u2501\u2501\u2501{/bold}{/center}\n\n';
@@ -433,11 +438,11 @@ class TUIServer {
     }
 
     let xAxis = '';
-    const labelStep = Math.ceil(width / 15);
+    const labelStep = Math.max(1, Math.ceil(width / 20));
     for (let i = 0; i < width; i++) {
-      if (i % Math.ceil(width / 15) === 0) {
+      if (i % Math.ceil(width / 20) === 0) {
         const idx = Math.floor(i * labels.length / width);
-        xAxis += (labels[idx] || ' ').padEnd(Math.ceil(width / 15), ' ').slice(0, Math.ceil(width / 15));
+        xAxis += (labels[idx] || ' ').padEnd(Math.ceil(width / 20), ' ').slice(0, Math.ceil(width / 20));
       } else {
         xAxis += ' ';
       }
@@ -525,6 +530,7 @@ class TUIServer {
     if (r >= 0.70) return 15;
     if (r >= 0.65) return 14;
     if (r >= 0.60) return 13;
+    if (r >= 0.60) return 13;
     if (r >= 0.55) return 12;
     if (r >= 0.50) return 11;
     if (r >= 0.45) return 10;
@@ -576,6 +582,16 @@ class TUIServer {
       if (!this._earlyLogs) this._earlyLogs = [];
       this._earlyLogs.push('[' + time + '] ' + this.escape(msg));
     }
+  }
+
+  getContentWidth() {
+    const mainWidth = this.layout.main.width;
+    return typeof mainWidth === 'number' ? mainWidth - 2 : this.screen.width - 4;
+  }
+
+  getContentHeight() {
+    const mainHeight = this.layout.main.height;
+    return typeof mainHeight === 'number' ? mainHeight - 2 : this.screen.height - 6;
   }
 
   sleep(ms) {
