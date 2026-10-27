@@ -398,8 +398,13 @@ class TUIServer {
 
   openWeb() {
     const url = 'http://' + this.host + ':' + this.port;
-    const opener = process.platform === 'win32' ? 'start' : process.platform === 'darwin' ? 'open' : 'xdg-open';
-    spawn(opener, [url], { detached: true, stdio: 'ignore' }).unref();
+    if (process.platform === 'win32') {
+      spawn('cmd', ['/c', 'start', '""', url], { detached: true, stdio: 'ignore' }).unref();
+    } else if (process.platform === 'darwin') {
+      spawn('open', [url], { detached: true, stdio: 'ignore' }).unref();
+    } else {
+      spawn('xdg-open', [url], { detached: true, stdio: 'ignore' }).unref();
+    }
   }
 
   getContentWidth() {
