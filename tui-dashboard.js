@@ -70,7 +70,10 @@ class TUIServer {
         res.on('data', chunk => data += chunk);
         res.on('end', () => {
           try {
-            resolve(JSON.parse(data));
+            const raw = res.headers['content-type']?.includes('utf-16') 
+              ? Buffer.from(data, 'utf16le').toString('utf8')
+              : data;
+            resolve(JSON.parse(raw));
           } catch (e) {
             reject(e);
           }
@@ -97,14 +100,13 @@ class TUIServer {
       // Parse report for projects (from agents)
       const reportData = report.report || report;
       const agents = reportData.agents || [];
-      // Convert agents to projects format
-      const projects = agents
+      const projects = (agents || [])
         .filter(a => a.sessions > 0)
         .map(a => ({
           name: a.agent,
           mainSessionCount: a.sessions,
           sessionCount: a.sessions,
-          tokens: { total: a.tok_in + a.tok_out + a.tok_reasoning + a.cache_read },
+          tokens: { total: (a.tok_in || 0) + (a.tok_out || 0) + (a.tok_reasoning || 0) + (a.cache_read || 0) },
           cost: a.cost || 0
         }));
 
@@ -118,7 +120,7 @@ class TUIServer {
           days: overview.days || 0,
           messages: overview.messages || 0
         },
-        projects: projects,
+        projects: Array.isArray(projects) ? projects : [],
         models: Array.isArray(models) ? models : [],
         trend: trendData,
         tokens: {
@@ -179,7 +181,6 @@ class TUIServer {
   }
 
   createLayout() {
-    // Header - fixed at top, 2 lines
     this.layout.header = blessed.box({
       top: 0,
       left: 0,
@@ -191,7 +192,6 @@ class TUIServer {
       content: '{center}{bold}opencode-statboard v' + pkg.version + '{/bold}  TUI  |  [1]Overview [2]Projects [3]Models [4]Trend [5]Heatmap [W]Web [R]Refresh [Q]Quit{/center}'
     });
 
-    // Main content - fills middle area
     this.layout.main = blessed.box({
       top: 2,
       bottom: 2,
@@ -207,7 +207,6 @@ class TUIServer {
       mouse: true
     });
 
-    // Footer - fixed at bottom, 2 lines
     this.layout.footer = blessed.box({
       bottom: 0,
       left: 0,
@@ -371,7 +370,7 @@ class TUIServer {
 
     const lines = ['{center}{bold}\u2501\u2501\u2501 MODELS \u2501\u2501\u2501{/bold}{/center}', ''];
     lines.push('{bold}{Model:<40} {Provider:<14} {Tokens:>18} {Cost:>12} {Speed:>10}{/bold}');
-    lines.push('{gray}\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500{/gray}');
+    lines.push('{gray}\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500{/gray}');
 
     for (const m of models.slice(0, 30)) {
       const name = m.name.length > 38 ? m.name.slice(0, 35) + '...' : m.name;
