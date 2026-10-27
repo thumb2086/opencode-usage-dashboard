@@ -10,6 +10,119 @@ const { spawn } = require('child_process');
 const path = require('path');
 const pkg = require('./package.json');
 
+const I18N = {
+  en: {
+    title: 'opencode-statboard v{version}  TUI',
+    keys: '[1]Overview [2]Projects [3]Models [4]Trend [5]Heatmap [W]Web [R]Refresh [Q]Quit',
+    footer: 'Last update: {time}  |  View: {view}  |  W:Web R:Refresh Q:Quit',
+    loading: 'Loading data...',
+    error: 'Error: {error}',
+    overview: 'OVERVIEW',
+    projects: 'PROJECTS',
+    models: 'MODELS',
+    trend: 'TREND (90 days)',
+    heatmap: 'HEATMAP',
+    noData: 'No data',
+    sessions: 'Sessions',
+    main: 'main',
+    total: 'total',
+    projectsLabel: 'Projects',
+    days: 'Days',
+    messages: 'Messages',
+    tokens: 'Tokens',
+    input: 'Input',
+    output: 'Output',
+    reasoning: 'Reasoning',
+    cacheRead: 'Cache Read',
+    cacheWrite: 'Cache Write',
+    total: 'Total',
+    cost: 'Cost',
+    marketValue: 'Market Value',
+    saved: 'Saved',
+    avgCostDay: 'Avg Cost/Day',
+    avgTokensDay: 'Avg Tokens/Day',
+    projectHeader: '{Project:<45} {Sessions:>10} {Tokens:>18} {Cost:>14}',
+    modelHeader: '{Model:<40} {Provider:<14} {Tokens:>18} {Cost:>12} {Speed:>10}',
+    unknown: 'unknown',
+    today: 'Today',
+    version: 'Version'
+  },
+  zh: {
+    title: 'opencode-statboard v{version}  TUI',
+    keys: '[1]總覽 [2]專案 [3]模型 [4]趨勢 [5]熱力 [W]網頁 [R]重整 [Q]離開 [L]語言',
+    footer: '上次更新: {time}  |  視圖: {view}  |  W:網頁 R:重整 Q:離開',
+    loading: '載入資料中...',
+    error: '錯誤: {error}',
+    overview: '總覽',
+    projects: '專案',
+    models: '模型',
+    trend: '趨勢 (90 天)',
+    heatmap: '熱力圖',
+    noData: '無資料',
+    sessions: '會話',
+    main: '主',
+    total: '總計',
+    projectsLabel: '專案數',
+    days: '天數',
+    messages: '訊息',
+    tokens: 'Token',
+    input: '輸入',
+    output: '輸出',
+    reasoning: '推理',
+    cacheRead: '快取讀取',
+    cacheWrite: '快取寫入',
+    total: '總計',
+    cost: '成本',
+    marketValue: '市場價值',
+    saved: '節省',
+    avgCostDay: '日均成本',
+    avgTokensDay: '日均Token',
+    projectHeader: '{專案:<45} {會話:>10} {Token:>18} {成本:>14}',
+    modelHeader: '{模型:<40} {供應商:<14} {Token:>18} {成本:>12} {速度:>10}',
+    unknown: '未知',
+    today: '今天',
+    version: '版本',
+    sun: '日', mon: '一', tue: '二', wed: '三', thu: '四', fri: '五', sat: '六'
+  },
+  en: {
+    title: 'opencode-statboard v{version}  TUI',
+    keys: '[1]Overview [2]Projects [3]Models [4]Trend [5]Heatmap [W]Web [R]Refresh [Q]Quit [L]Lang',
+    footer: 'Last update: {time}  |  View: {view}  |  W:Web R:Refresh Q:Quit',
+    loading: 'Loading data...',
+    error: 'Error: {error}',
+    overview: 'OVERVIEW',
+    projects: 'PROJECTS',
+    models: 'MODELS',
+    trend: 'TREND (90 days)',
+    heatmap: 'HEATMAP',
+    noData: 'No data',
+    sessions: 'Sessions',
+    main: 'main',
+    total: 'total',
+    projectsLabel: 'Projects',
+    days: 'Days',
+    messages: 'Messages',
+    tokens: 'Tokens',
+    input: 'Input',
+    output: 'Output',
+    reasoning: 'Reasoning',
+    cacheRead: 'Cache Read',
+    cacheWrite: 'Cache Write',
+    total: 'Total',
+    cost: 'Cost',
+    marketValue: 'Market Value',
+    saved: 'Saved',
+    avgCostDay: 'Avg Cost/Day',
+    avgTokensDay: 'Avg Tokens/Day',
+    projectHeader: '{Project:<45} {Sessions:>10} {Tokens:>18} {Cost:>14}',
+    modelHeader: '{Model:<40} {Provider:<14} {Tokens:>18} {Cost:>12} {Speed:>10}',
+    unknown: 'unknown',
+    today: 'Today',
+    version: 'Version',
+    sun: 'Sun', mon: 'Mon', tue: 'Tue', wed: 'Wed', thu: 'Thu', fri: 'Fri', sat: 'Sat'
+  }
+};
+
 class TUIServer {
   constructor(options = {}) {
     this.port = options.port || 4868;
@@ -30,6 +143,7 @@ class TUIServer {
     this.pollInterval = null;
     this.lastUpdate = null;
     this._earlyLogs = [];
+    this.lang = 'zh'; // Default to Chinese
   }
 
   async start() {
@@ -183,12 +297,30 @@ class TUIServer {
     this.screen.key(['S-tab'], () => this.prevView());
     this.screen.key(['r'], () => this.pollData());
     this.screen.key(['w'], () => this.openWeb());
+    this.screen.key(['l'], () => this.toggleLang());
 
     this.createLayout();
     this.render();
   }
 
+  toggleLang() {
+    this.lang = this.lang === 'zh' ? 'en' : 'zh';
+    this.createLayout();
+    this.render();
+  }
+
+  t(key) {
+    return I18N[this.lang][key] || key;
+  }
+
   createLayout() {
+    // Remove old layout if exists
+    if (this.layout.header) this.screen.remove(this.layout.header);
+    if (this.layout.main) this.screen.remove(this.layout.main);
+    if (this.layout.footer) this.screen.remove(this.layout.footer);
+
+    const t = this.t.bind(this);
+
     this.layout.header = blessed.box({
       top: 0,
       left: 0,
@@ -197,7 +329,7 @@ class TUIServer {
       tags: true,
       border: { type: 'line' },
       style: { border: { fg: 'cyan' } },
-      content: '{center}{bold}opencode-statboard v' + pkg.version + '{/bold}  TUI  |  [1]Overview [2]Projects [3]Models [4]Trend [5]Heatmap [W]Web [R]Refresh [Q]Quit{/center}'
+      content: '{center}{bold}' + t('title').replace('{version}', pkg.version) + '{/bold}  |  ' + t('keys') + '  [L]Lang{/center}'
     });
 
     this.layout.main = blessed.box({
@@ -205,7 +337,6 @@ class TUIServer {
       bottom: 2,
       left: 0,
       width: '100%',
-      height: '100%-4',
       tags: true,
       border: { type: 'line' },
       style: { border: { fg: 'blue' } },
@@ -224,14 +355,12 @@ class TUIServer {
       tags: true,
       border: { type: 'line' },
       style: { border: { fg: 'green' } },
-      content: '{center}Last update: {bold}never{/bold}  |  View: {bold}overview{/bold}  |  W:Web R:Refresh Q:Quit{/center}'
+      content: '{center}' + t('footer').replace('{time}', this.lastUpdate ? this.lastUpdate.toLocaleTimeString() : 'never').replace('{view}', t(this.currentView)) + '{/center}'
     });
 
     this.screen.append(this.layout.header);
     this.screen.append(this.layout.main);
     this.screen.append(this.layout.footer);
-
-    this.render();
   }
 
   switchView(view) {
@@ -260,16 +389,10 @@ class TUIServer {
   }
 
   updateFooter() {
+    const t = this.t.bind(this);
     const time = this.lastUpdate ? this.lastUpdate.toLocaleTimeString() : 'never';
-    const viewLabels = {
-      overview: 'Overview',
-      projects: 'Projects',
-      models: 'Models',
-      trend: 'Trend',
-      heatmap: 'Heatmap'
-    };
     this.layout.footer.setContent(
-      '{center}Last update: {bold}' + time + '{/bold}  |  View: {bold}' + (viewLabels[this.currentView] || this.currentView) + '{/bold}  |  W:Web R:Refresh Q:Quit{/center}'
+      '{center}' + t('footer').replace('{time}', time).replace('{view}', t(this.currentView)) + '{/center}'
     );
   }
 
@@ -286,7 +409,8 @@ class TUIServer {
 
   getContentHeight() {
     const mainHeight = this.layout.main.height;
-    return typeof mainHeight === 'number' ? mainHeight - 2 : this.screen.height - 6;
+    if (typeof mainHeight === 'number') return mainHeight - 2;
+    return this.screen.height - 6; // header(2) + footer(2) + borders(2)
   }
 
   render() {
@@ -314,43 +438,45 @@ class TUIServer {
 
   renderOverview() {
     const ov = this.data;
-    if (!ov || ov.loading) return '{center}{bold}Loading data...{/bold}{/center}';
+    const t = this.t.bind(this);
+    if (!ov || ov.loading) return '{center}{bold}' + t('loading') + '{/bold}{/center}';
 
     const tokens = ov.tokens || {};
     const cost = ov.cost || {};
 
     const lines = [
-      '{center}{bold}\u2501\u2501\u2501 OVERVIEW \u2501\u2501\u2501{/bold}{/center}',
+      '{center}{bold}\u2501\u2501\u2501 ' + t('overview') + ' \u2501\u2501\u2501{/bold}{/center}',
       '',
-      '{bold}Sessions:{/bold} ' + (ov.overview?.sessions?.main || 0) + ' main / ' + (ov.overview?.sessions?.total || 0) + ' total',
-      '{bold}Projects:{/bold} ' + (ov.overview?.projects || 0),
-      '{bold}Days:{/bold} ' + (ov.overview?.days || 0),
-      '{bold}Messages:{/bold} ' + (ov.overview?.messages || 0),
+      '{bold}' + t('sessions') + ':{/bold} ' + (ov.overview?.sessions?.main || 0) + ' ' + t('main') + ' / ' + (ov.overview?.sessions?.total || 0) + ' ' + t('total'),
+      '{bold}' + t('projectsLabel') + ':{/bold} ' + (ov.overview?.projects || 0),
+      '{bold}' + t('days') + ':{/bold} ' + (ov.overview?.days || 0),
+      '{bold}' + t('messages') + ':{/bold} ' + (ov.overview?.messages || 0),
       '',
-      '{bold}Tokens:{/bold}',
-      '  Input:        ' + this.formatNumber(tokens.input || 0),
-      '  Output:       ' + this.formatNumber(tokens.output || 0),
-      '  Reasoning:    ' + this.formatNumber(tokens.reasoning || 0),
-      '  Cache Read:   ' + this.formatNumber(tokens.cacheRead || 0),
-      '  Cache Write:  ' + this.formatNumber(tokens.cacheWrite || 0),
-      '  {bold}Total:        ' + this.formatNumber(tokens.total || 0) + '{/bold}',
+      '{bold}' + t('tokens') + ':{/bold}',
+      '  ' + t('input') + ':        ' + this.formatNumber(tokens.input || 0),
+      '  ' + t('output') + ':       ' + this.formatNumber(tokens.output || 0),
+      '  ' + t('reasoning') + ':    ' + this.formatNumber(tokens.reasoning || 0),
+      '  ' + t('cacheRead') + ':   ' + this.formatNumber(tokens.cacheRead || 0),
+      '  ' + t('cacheWrite') + ':  ' + this.formatNumber(tokens.cacheWrite || 0),
+      '  {bold}' + t('total') + ':        ' + this.formatNumber(tokens.total || 0) + '{/bold}',
       '',
-      '{bold}Cost:{/bold} ' + this.formatCost(cost.total || 0),
-      '{bold}Market Value:{/bold} ' + this.formatCost(cost.marketValue || 0),
-      '{bold}Saved:{/bold} ' + this.formatCost(cost.saved || 0) + (cost.savedPct ? ' (' + cost.savedPct + '%)' : ''),
+      '{bold}' + t('cost') + ':{/bold} ' + this.formatCost(cost.total || 0),
+      '{bold}' + t('marketValue') + ':{/bold} ' + this.formatCost(cost.marketValue || 0),
+      '{bold}' + t('saved') + ':{/bold} ' + this.formatCost(cost.saved || 0) + (cost.savedPct ? ' (' + cost.savedPct + '%)' : ''),
       '',
-      '{bold}Avg Cost/Day:{/bold} ' + this.formatCost(cost.avgCostPerDay || 0),
-      '{bold}Avg Tokens/Day:{/bold} ' + this.formatNumber(cost.avgTokensPerDay || 0)
+      '{bold}' + t('avgCostDay') + ':{/bold} ' + this.formatCost(cost.avgCostPerDay || 0),
+      '{bold}' + t('avgTokensDay') + ':{/bold} ' + this.formatNumber(cost.avgTokensPerDay || 0)
     ];
     return lines.join('\n');
   }
 
   renderProjects() {
     const projects = this.data.projects || [];
-    if (projects.length === 0) return '{center}No projects{/center}';
+    const t = this.t.bind(this);
+    if (projects.length === 0) return '{center}' + t('noData') + '{/center}';
 
-    const lines = ['{center}{bold}\u2501\u2501\u2501 PROJECTS \u2501\u2501\u2501{/bold}{/center}', ''];
-    lines.push('{bold}{Project:<45} {Sessions:>10} {Tokens:>18} {Cost:>14}{/bold}');
+    const lines = ['{center}{bold}\u2501\u2501\u2501 ' + t('projects') + ' \u2501\u2501\u2501{/bold}{/center}', ''];
+    lines.push('{bold}' + t('projectHeader') + '{/bold}');
     lines.push('{gray}\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500{/gray}');
 
     for (const p of projects.slice(0, 50)) {
@@ -367,7 +493,7 @@ class TUIServer {
 
     if (projects.length > 50) {
       lines.push('');
-      lines.push('{gray}... and ' + (projects.length - 50) + ' more projects{/gray}');
+      lines.push('{gray}... ' + t('noData') + ' ' + (projects.length - 50) + ' ' + t('projects') + '{/gray}');
     }
 
     return lines.join('\n');
@@ -375,10 +501,11 @@ class TUIServer {
 
   renderModels() {
     const models = this.data.models || [];
-    if (models.length === 0) return '{center}No models{/center}';
+    const t = this.t.bind(this);
+    if (models.length === 0) return '{center}' + t('noData') + '{/center}';
 
-    const lines = ['{center}{bold}\u2501\u2501\u2501 MODELS \u2501\u2501\u2501{/bold}{/center}', ''];
-    lines.push('{bold}{Model:<40} {Provider:<14} {Tokens:>18} {Cost:>12} {Speed:>10}{/bold}');
+    const lines = ['{center}{bold}\u2501\u2501\u2501 ' + t('models') + ' \u2501\u2501\u2501{/bold}{/center}', ''];
+    lines.push('{bold}' + t('modelHeader') + '{/bold}');
     lines.push('{gray}\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500{/gray}');
 
     for (const m of models.slice(0, 30)) {
@@ -400,8 +527,9 @@ class TUIServer {
 
   renderTrend() {
     const trend = this.data.trend;
+    const t = this.t.bind(this);
     if (!trend || !trend.labels || !trend.labels.length) {
-      return '{center}No trend data{/center}';
+      return '{center}' + t('noData') + '{/center}';
     }
 
     const labels = trend.labels;
@@ -413,7 +541,7 @@ class TUIServer {
     const height = this.getContentHeight() - 4;
     const width = this.getContentWidth();
 
-    let out = '{center}{bold}\u2501\u2501\u2501 TREND (90 days) \u2501\u2501\u2501{/bold}{/center}\n\n';
+    let out = '{center}{bold}\u2501\u2501\u2501 ' + t('trend') + ' \u2501\u2501\u2501{/bold}{/center}\n\n';
     out += '{bold}Input (cyan) / Output (green) / Cost (yellow){/bold}\n\n';
 
     for (let row = height - 1; row >= 0; row--) {
@@ -444,15 +572,16 @@ class TUIServer {
     out += '\n{gray}' + xAxis + '{/gray}\n';
 
     const lastIdx = labels.length - 1;
-    out += '\n{bold}Today:{/bold} Input: ' + this.formatNumber(input[lastIdx] || 0) + ' | Output: ' + this.formatNumber(output[lastIdx] || 0) + ' | Cost: ' + this.formatCost(cost[lastIdx] || 0);
+    out += '\n{bold}' + t('today') + ':{/bold} Input: ' + this.formatNumber(input[lastIdx] || 0) + ' | Output: ' + this.formatNumber(output[lastIdx] || 0) + ' | Cost: ' + this.formatCost(cost[lastIdx] || 0);
 
     return out;
   }
 
   renderHeatmap() {
     const trend = this.data.trend;
+    const t = this.t.bind(this);
     if (!trend || !trend.dates || !trend.dates.length) {
-      return '{center}No heatmap data{/center}';
+      return '{center}' + t('noData') + '{/center}';
     }
 
     const dates = trend.dates;
@@ -472,7 +601,7 @@ class TUIServer {
 
     const monthNames = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
 
-    let out = '{center}{bold}\u2501\u2501\u2501 HEATMAP (90 days) \u2501\u2501\u2501{/bold}{/center}\n\n';
+    let out = '{center}{bold}\u2501\u2501\u2501 ' + t('heatmap') + ' \u2501\u2501\u2501{/bold}{/center}\n\n';
     
     let monthHeader = '      ';
     let lastMonth = -1;
@@ -492,7 +621,7 @@ class TUIServer {
     }
     out = '{gray}' + monthHeader + '{/gray}\n';
 
-    const dow = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+    const dow = [t('sun') || 'Sun', t('mon') || 'Mon', t('tue') || 'Tue', t('wed') || 'Wed', t('thu') || 'Thu', t('fri') || 'Fri', t('sat') || 'Sat'];
     for (let d = 0; d < 7; d++) {
       let line = '{bold}' + dow[d].padEnd(4) + '{/bold} ';
       for (let w = 0; w < weeks.length; w++) {
@@ -510,6 +639,7 @@ class TUIServer {
     }
 
     out += '\n{gray}Less  \u2591\u2591\u2592\u2592\u2593\u2593\u2588\u2588  More  (max: ' + this.formatNumber(max) + '){/gray}';
+    return out;
     return out;
   }
 
@@ -575,11 +705,6 @@ class TUIServer {
   getContentWidth() {
     const mainWidth = this.layout.main.width;
     return typeof mainWidth === 'number' ? mainWidth - 2 : this.screen.width - 4;
-  }
-
-  getContentHeight() {
-    const mainHeight = this.layout.main.height;
-    return typeof mainHeight === 'number' ? mainHeight - 2 : this.screen.height - 6;
   }
 
   sleep(ms) {
