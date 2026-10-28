@@ -1569,9 +1569,9 @@ async function startServer() {
       await refresh();
       await refreshModels();
     }
-    setInterval(refresh, REFRESH_MS);
-    setInterval(refreshModels, 60000);
-    setInterval(refreshAttrBundle, 60000);
+    // Ensure attribution bundle is ready before generating trends,
+    // so the trend data uses the full attribution data, not EMPTY_ATTR.
+    await waitForBundle(180000);
     // Today's report eagerly (the common first view). Other periods build on
     // demand in the background via refreshReport stale-while-revalidate.
     for (const d of [1]) {
@@ -1586,6 +1586,9 @@ async function startServer() {
         if (t) trendCache[String(d)] = t;
       } catch (_) {}
     }
+    setInterval(refresh, REFRESH_MS);
+    setInterval(refreshModels, 60000);
+    setInterval(refreshAttrBundle, 60000);
     // (Windows may kill process for excessive I/O on large DB files).
     setTimeout(() => {
       autoBackupIfDue().catch((_) => {});
