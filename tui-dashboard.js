@@ -555,13 +555,15 @@ class TUIServer {
 
     const height = this.getContentHeight() - 4;
     const width = this.getContentWidth();
-    const chartHeight = Math.max(1, Math.floor(height / 3) - 2); // 3 charts, each ~1/3 height
+    const chartHeight = Math.max(1, Math.floor(height / 3) - 2);
 
     // Helper: render one chart with its own max
     const renderChart = (data, label, color, maxVal) => {
       if (maxVal <= 0) return '{gray}(no data){/gray}\n';
       let lines = [];
-      lines.push('{bold}' + label + ':{/bold}');
+      // Show current (today = last index) value next to label
+      const todayVal = data[data.length - 1] || 0;
+      lines.push('{bold}' + label + ': ' + this.formatNumber(todayVal) + ' (today){/bold}');
       for (let row = chartHeight - 1; row >= 0; row--) {
         let line = '';
         const threshold = (row / chartHeight) * maxVal;
@@ -586,6 +588,7 @@ class TUIServer {
     out += renderChart(output, t('output') + ' (green)', 'green', maxOut) + '\n';
     out += renderChart(cost, t('cost') + ' (yellow)', 'yellow', maxCost) + '\n';
 
+    // X-axis: show first date, middle date, last date
     let xAxis = '';
     const labelStep = Math.max(1, Math.ceil(width / 20));
     for (let i = 0; i < width; i++) {
@@ -597,6 +600,11 @@ class TUIServer {
       }
     }
     out += '{gray}' + xAxis + '{/gray}\n';
+
+    // Add date range info
+    const firstDate = trend.dates ? trend.dates[0] : labels[0];
+    const lastDate = trend.dates ? trend.dates[trend.dates.length - 1] : labels[labels.length - 1];
+    out += '\n{gray}Range: ' + firstDate + ' \u2192 ' + lastDate + '  (' + labels.length + ' days){/gray}\n';
 
     const lastIdx = labels.length - 1;
     out += '\n{bold}' + t('today') + ':{/bold} Input: ' + this.formatNumber(input[lastIdx] || 0) + ' | Output: ' + this.formatNumber(output[lastIdx] || 0) + ' | Cost: ' + this.formatCost(cost[lastIdx] || 0);
