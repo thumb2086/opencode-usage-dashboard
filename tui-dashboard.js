@@ -6,6 +6,7 @@
 
 const blessed = require('blessed');
 const http = require('http');
+const zlib = require('zlib');
 const { spawn } = require('child_process');
 const path = require('path');
 const pkg = require('./package.json');
@@ -148,7 +149,16 @@ class TUIServer {
 
   async start() {
     this.startServer();
-    await this.sleep(1500);
+    await this.sleep(3000);
+    // Health check: wait for server to be ready
+    for (let i = 0; i < 10; i++) {
+      try {
+        await this.fetchData('/api/stats?days=7');
+        break;
+      } catch {
+        await this.sleep(500);
+      }
+    }
     this.initTUI();
     this.startPolling();
     process.on('SIGINT', () => this.shutdown());
@@ -179,10 +189,15 @@ class TUIServer {
 
   async fetchData(endpoint) {
     return new Promise((resolve, reject) => {
-      http.get('http://' + this.host + ':' + this.port + endpoint, (res) => {
+      const req = http.get('http://' + this.host + ':' + this.port + endpoint, (res) => {
+        const encoding = res.headers['content-encoding'];
+        let stream = res;
+        if (encoding && encoding.includes('gzip')) {
+          stream = res.pipe(zlib.createGunzip());
+        }
         let data = '';
-        res.on('data', chunk => data += chunk);
-        res.on('end', () => {
+        stream.on('data', chunk => data += chunk);
+        stream.on('end', () => {
           try {
             const raw = res.headers['content-type']?.includes('utf-16') 
               ? Buffer.from(data, 'utf16le').toString('utf8')
@@ -192,7 +207,10 @@ class TUIServer {
             reject(e);
           }
         });
-      }).on('error', reject);
+        stream.on('error', reject);
+      });
+      req.on('error', reject);
+      req.setTimeout(10000, () => req.destroy(new Error('Request timeout')));
     });
   }
 
