@@ -14,7 +14,7 @@ const pkg = require('./package.json');
 const I18N = {
   en: {
     title: 'opencode-statboard v{version}  TUI',
-    keys: '[1]Overview [2]Projects [3]Models [4]Trend [5]Heatmap [W]Web [R]Refresh [Q]Quit',
+    keys: '[1]Overview [2]Projects [3]Models [4]Trend [5]Heatmap [W]Web [R]Refresh [Q]Quit [L]Lang',
     footer: 'Last update: {time}  |  View: {view}  |  W:Web R:Refresh Q:Quit',
     loading: 'Loading data...',
     error: 'Error: {error}',
@@ -46,7 +46,9 @@ const I18N = {
     modelHeader: '{Model:<40} {Provider:<14} {Tokens:>18} {Cost:>12} {Speed:>10}',
     unknown: 'unknown',
     today: 'Today',
-    version: 'Version'
+    version: 'Version',
+    day: 'Day', week: 'Week', month: 'Month', quarter: 'Quarter', all: 'All',
+    range: 'Range'
   },
   zh: {
     title: 'opencode-statboard v{version}  TUI',
@@ -83,7 +85,9 @@ const I18N = {
     unknown: '未知',
     today: '今天',
     version: '版本',
-    sun: '日', mon: '一', tue: '二', wed: '三', thu: '四', fri: '五', sat: '六'
+    sun: '日', mon: '一', tue: '二', wed: '三', thu: '四', fri: '五', sat: '六',
+    day: '日', week: '周', month: '月', quarter: '季', all: '全',
+    range: '範圍'
   },
   en: {
     title: 'opencode-statboard v{version}  TUI',
@@ -145,6 +149,14 @@ class TUIServer {
     this.lastUpdate = null;
     this._earlyLogs = [];
     this.lang = 'zh'; // Default to Chinese
+    this.timeRange = 7; // Default to 7 days (week)
+    this.timeRanges = [
+      { key: 'd', days: 1, label: { en: 'Day', zh: '日' } },
+      { key: 'w', days: 7, label: { en: 'Week', zh: '周' } },
+      { key: 'm', days: 30, label: { en: 'Month', zh: '月' } },
+      { key: 'q', days: 90, label: { en: 'Quarter', zh: '季' } },
+      { key: 'a', days: -1, label: { en: 'All', zh: '全' } }
+    ];
   }
 
   async start() {
@@ -216,11 +228,13 @@ class TUIServer {
 
   async pollData() {
     try {
+      const days = this.timeRange;
+      const trendDays = days === -1 ? 90 : days; // trend uses 90 for "all"
       const [stats, report, models, trend] = await Promise.all([
-        this.fetchData('/api/stats?days=7'),
-        this.fetchData('/api/report?days=7'),
-        this.fetchData('/api/stats?days=7').then(r => r.models || []),
-        this.fetchData('/api/stats?days=90')
+        this.fetchData('/api/stats?days=' + days),
+        this.fetchData('/api/report?days=' + days),
+        this.fetchData('/api/stats?days=' + days).then(r => r.models || []),
+        this.fetchData('/api/stats?days=' + trendDays)
       ]);
 
       // Parse stats response
@@ -317,6 +331,11 @@ class TUIServer {
     this.screen.key(['w'], () => this.openWeb());
     this.screen.key(['l'], () => this.toggleLang());
 
+    // Time range keys
+    this.timeRanges.forEach(tr => {
+      this.screen.key([tr.key], () => this.setTimeRange(tr.days));
+    });
+
     this.createLayout();
     this.render();
   }
@@ -325,6 +344,18 @@ class TUIServer {
     this.lang = this.lang === 'zh' ? 'en' : 'zh';
     this.createLayout();
     this.render();
+  }
+
+  setTimeRange(days) {
+    this.timeRange = days;
+    this.pollData();
+    this.createLayout();
+    this.render();
+  }
+
+  getTimeRangeLabel() {
+    const tr = this.timeRanges.find(r => r.days === this.timeRange);
+    return tr ? tr.label[this.lang] : String(this.timeRange);
   }
 
   t(key) {
@@ -347,7 +378,7 @@ class TUIServer {
       tags: true,
       border: { type: 'line' },
       style: { border: { fg: 'cyan' } },
-      content: '{center}{bold}' + t('title').replace('{version}', pkg.version) + '{/bold}  |  ' + t('keys') + '  [L]Lang{/center}'
+      content: '{center}{bold}' + t('title').replace('{version}', pkg.version) + '{/bold}  |  ' + t('keys') + '  [L]Lang  |  ' + t('range') + ': ' + this.getTimeRangeLabel() + '{/center}'
     });
 
     this.layout.main = blessed.box({
@@ -542,7 +573,7 @@ class TUIServer {
 
     for (const m of models.slice(0, 30)) {
       const name = m.name.length > 38 ? m.name.slice(0, 35) + '...' : m.name;
-      const provider = (m.provider || 'unknown').slice(0, 12);
+      const provider = (m.provider || (m.name.includes('/') ? m.name.split('/')[0] : 'unknown')).slice(0, 12);
       const tokens = this.formatNumber(m.tokens?.total || m.tokens || 0);
       const cost = this.formatCost(m.cost || 0);
       const speed = m.speed ? m.speed.toFixed(1) + ' tok/s' : '\u2014';
