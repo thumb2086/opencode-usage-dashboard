@@ -604,7 +604,7 @@ class TUIServer {
 
     const height = this.getContentHeight() - 4;
     const width = this.getContentWidth();
-    const chartHeight = Math.max(1, Math.floor(height / 3) - 2);
+    const chartHeight = Math.max(1, Math.floor(height / 5) - 2);
 
     // Helper: render one chart with its own max
     const renderChart = (data, label, color, maxVal) => {
@@ -629,13 +629,17 @@ class TUIServer {
 
     const maxIn = Math.max(...input, 1);
     const maxOut = Math.max(...output, 1);
+    const maxCache = Math.max(...cache, 1);
+    const maxTotal = Math.max(...labels.map((_, i) => (input[i] || 0) + (output[i] || 0) + (reasoning[i] || 0) + (cache[i] || 0)), 1);
     const maxCost = Math.max(...cost, 1);
 
     let out = '{center}{bold}\u2501\u2501\u2501 ' + t('trend') + ' \u2501\u2501\u2501{/bold}{/center}\n\n';
 
     out += renderChart(input, t('input') + ' (cyan)', 'cyan', maxIn) + '\n';
     out += renderChart(output, t('output') + ' (green)', 'green', maxOut) + '\n';
-    out += renderChart(cost, t('cost') + ' (yellow)', 'yellow', maxCost) + '\n';
+    out += renderChart(cache, t('cacheRead') + ' (yellow)', 'yellow', maxCache) + '\n';
+    out += renderChart(labels.map((_, i) => (input[i] || 0) + (output[i] || 0) + (reasoning[i] || 0) + (cache[i] || 0)), t('total') + ' (magenta)', 'magenta', maxTotal) + '\n';
+    out += renderChart(cost, t('cost') + ' (red)', 'red', maxCost) + '\n';
 
     // X-axis: show first date, middle date, last date
     let xAxis = '';
@@ -656,7 +660,8 @@ class TUIServer {
     out += '\n{gray}Range: ' + firstDate + ' \u2192 ' + lastDate + '  (' + labels.length + ' days){/gray}\n';
 
     const lastIdx = labels.length - 1;
-    out += '\n{bold}' + t('today') + ':{/bold} Input: ' + this.formatNumber(input[lastIdx] || 0) + ' | Output: ' + this.formatNumber(output[lastIdx] || 0) + ' | Cost: ' + this.formatCost(cost[lastIdx] || 0);
+    const totalTokens = (input[lastIdx] || 0) + (output[lastIdx] || 0) + (reasoning[lastIdx] || 0) + (cache[lastIdx] || 0);
+    out += '\n{bold}' + t('today') + ':{/bold} Input: ' + this.formatNumber(input[lastIdx] || 0) + ' | Output: ' + this.formatNumber(output[lastIdx] || 0) + ' | Cache: ' + this.formatNumber(cache[lastIdx] || 0) + ' | Total: ' + this.formatNumber(totalTokens) + ' | Cost: ' + this.formatCost(cost[lastIdx] || 0);
 
     return out;
   }
