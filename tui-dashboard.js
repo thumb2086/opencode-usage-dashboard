@@ -604,15 +604,34 @@ class TUIServer {
 
     const height = this.getContentHeight() - 4;
     const width = this.getContentWidth();
-    const chartHeight = Math.max(1, Math.floor(height / 5) - 2);
+    const chartHeight = Math.max(1, Math.floor(height / 4) - 2);
 
-    // Helper: render one chart with its own max
+    let out = '{center}{bold}\u2501\u2501\u2501 ' + t('trend') + ' \u2501\u2501\u2501{/bold}{/center}\n\n';
+
+    const maxInOut = Math.max(...labels.map((_, i) => Math.max(input[i] || 0, output[i] || 0)), 1);
+    let inOutChart = [];
+    inOutChart.push('{bold}' + t('input') + ' (' + this.formatNumber(input[input.length - 1] || 0) + ') + ' + t('output') + ' (' + this.formatNumber(output[output.length - 1] || 0) + ') today, max: ' + this.formatNumber(maxInOut) + '{/bold}');
+    for (let row = chartHeight - 1; row >= 0; row--) {
+      let line = '';
+      const threshold = (row / chartHeight) * maxInOut;
+      for (let i = 0; i < width; i++) {
+        const idx = Math.floor(i * labels.length / width);
+        const inVal = input[idx] || 0;
+        const outVal = output[idx] || 0;
+        if (inVal >= threshold && outVal >= threshold) line += '{magenta-fg}\u2588{/}';
+        else if (inVal >= threshold) line += '{cyan-fg}\u2588{/}';
+        else if (outVal >= threshold) line += '{green-fg}\u2588{/}';
+        else line += ' ';
+      }
+      inOutChart.push(line);
+    }
+    out += inOutChart.join('\n') + '\n';
+
     const renderChart = (data, label, color, maxVal) => {
       if (maxVal <= 0) return '{gray}(no data){/gray}\n';
       let lines = [];
-      // Show current (today = last index) value next to label
       const todayVal = data[data.length - 1] || 0;
-      lines.push('{bold}' + label + ': ' + this.formatNumber(todayVal) + ' (today){/bold}');
+      lines.push('{bold}' + label + ': ' + this.formatNumber(todayVal) + ' (today, max: ' + this.formatNumber(maxVal) + '){/bold}');
       for (let row = chartHeight - 1; row >= 0; row--) {
         let line = '';
         const threshold = (row / chartHeight) * maxVal;
@@ -627,21 +646,13 @@ class TUIServer {
       return lines.join('\n');
     };
 
-    const maxIn = Math.max(...input, 1);
-    const maxOut = Math.max(...output, 1);
+    const maxReasoning = Math.max(...reasoning, 1);
     const maxCache = Math.max(...cache, 1);
-    const maxTotal = Math.max(...labels.map((_, i) => (input[i] || 0) + (output[i] || 0) + (reasoning[i] || 0) + (cache[i] || 0)), 1);
     const maxCost = Math.max(...cost, 1);
-
-    let out = '{center}{bold}\u2501\u2501\u2501 ' + t('trend') + ' \u2501\u2501\u2501{/bold}{/center}\n\n';
-
-    out += renderChart(input, t('input') + ' (cyan)', 'cyan', maxIn) + '\n';
-    out += renderChart(output, t('output') + ' (green)', 'green', maxOut) + '\n';
+    out += renderChart(reasoning, t('reasoning') + ' (tool)', 'tool', maxReasoning) + '\n';
     out += renderChart(cache, t('cacheRead') + ' (yellow)', 'yellow', maxCache) + '\n';
-    out += renderChart(labels.map((_, i) => (input[i] || 0) + (output[i] || 0) + (reasoning[i] || 0) + (cache[i] || 0)), t('total') + ' (magenta)', 'magenta', maxTotal) + '\n';
     out += renderChart(cost, t('cost') + ' (red)', 'red', maxCost) + '\n';
 
-    // X-axis: show first date, middle date, last date
     let xAxis = '';
     const labelStep = Math.max(1, Math.ceil(width / 20));
     for (let i = 0; i < width; i++) {
@@ -654,18 +665,14 @@ class TUIServer {
     }
     out += '{gray}' + xAxis + '{/gray}\n';
 
-    // Add date range info
     const firstDate = trend.dates ? trend.dates[0] : labels[0];
     const lastDate = trend.dates ? trend.dates[trend.dates.length - 1] : labels[labels.length - 1];
+    const totalToday = (input[input.length-1]||0) + (output[output.length-1]||0) + (reasoning[reasoning.length-1]||0) + (cache[cache.length-1]||0);
     out += '\n{gray}Range: ' + firstDate + ' \u2192 ' + lastDate + '  (' + labels.length + ' days){/gray}\n';
-
-    const lastIdx = labels.length - 1;
-    const totalTokens = (input[lastIdx] || 0) + (output[lastIdx] || 0) + (reasoning[lastIdx] || 0) + (cache[lastIdx] || 0);
-    out += '\n{bold}' + t('today') + ':{/bold} Input: ' + this.formatNumber(input[lastIdx] || 0) + ' | Output: ' + this.formatNumber(output[lastIdx] || 0) + ' | Cache: ' + this.formatNumber(cache[lastIdx] || 0) + ' | Total: ' + this.formatNumber(totalTokens) + ' | Cost: ' + this.formatCost(cost[lastIdx] || 0);
+    out += '{bold}' + t('today') + ':{/bold} Input: ' + this.formatNumber(input[input.length - 1] || 0) + ' | Output: ' + this.formatNumber(output[output.length - 1] || 0) + ' | Reasoning: ' + this.formatNumber(reasoning[reasoning.length - 1] || 0) + ' | Cache: ' + this.formatNumber(cache[cache.length - 1] || 0) + ' | Total: ' + this.formatNumber(totalToday) + ' | Cost: ' + this.formatCost(cost[cost.length - 1] || 0);
 
     return out;
   }
-
   renderHeatmap() {
     const trend = this.data.trend;
     const t = this.t.bind(this);

@@ -1,6 +1,6 @@
 {
   "name": "opencode-statboard",
-  "version": "2.10.16",
+  "version": "2.10.17",
   "description": "Real-time dashboard for opencode token usage and cost statistics",
   "main": "server.js",
   "bin": {
