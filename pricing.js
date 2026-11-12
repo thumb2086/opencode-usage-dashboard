@@ -9,7 +9,8 @@
 //      -contributor-free) or duplicated provider prefix   -> kind 'sibling'
 //   3. same base name under provider 'opencode'            -> kind 'proxy'
 //   4. same base name anywhere else (cheapest nonzero)     -> kind 'proxy'
-//   5. nothing in the catalog                              -> null (NOT priced;
+//   5. manual FREE_MODEL_MAPPING for free models without automatic match
+//   6. nothing in the catalog                              -> null (NOT priced;
 //      inventing a number here is how a $0 model turned into $212 of fake
 //      savings). Callers must show '—' and can disclose the unpriced rows.
 //
@@ -18,6 +19,83 @@
 // reasoning > output). cache_write is always 0 in the DB.
 const fs = require('fs');
 const path = require('path');
+
+const stripFree = (m) => String(m).replace(/-contributor-free$/, '').replace(/-free$/, '').replace(/:free$/, '');
+
+// Manual paid-model mapping for free opencode models that have no automatic
+// sibling/proxy match. Key: free model name (with or without provider prefix),
+// value: paid model full name (provider/model from cache).
+const FREE_MODEL_MAPPING = {
+  'opencode/space-bunny-free': 'pioneer/mistralai/Mistral-7B-Instruct-v0.3',
+  'opencode/beam-free': 'openrouter/xiaomi/mimo-v2.5',
+  'opencode/fledge-alpha-free': 'pioneer/mistralai/Mistral-7B-Instruct-v0.3',
+  'opencode/grok-code': 'vercel/spacexai/grok-4.1-fast-reasoning',
+  'opencode/laguna-s-2.1-free': 'nano-gpt/poolside/laguna-s-2.1',
+  'opencode/x-preview-f-free': 'vercel/spacexai/grok-4.1-fast-reasoning',
+  'opencode/nemotron-3.5-lightning-free': 'nano-gpt/nvidia/nemotron-3.5-lightning',
+  'opencode/big-pickle': 'vercel/spacexai/grok-4.1-fast-reasoning',
+  'opencode/ling-3.0-flash-fin-free': 'empiriolabs/qwen3-8-flash',
+  'opencode/mimo-v2.5-free': 'openrouter/xiaomi/mimo-v2.5',
+  'opencode/nemotron-3-super-free': 'openrouter/nvidia/nemotron-3-super-120b-a12b',
+  'opencode/nemotron-3-ultra-free': 'openrouter/nvidia/nemotron-3-ultra-550b-a55b',
+  'opencode/glm-4.7-free': 'openrouter/z-ai/glm-4.7',
+  'opencode/glm-5-free': 'openrouter/z-ai/glm-5',
+  'opencode/mimo-v2-flash-free': 'openrouter/xiaomi/mimo-v2-flash',
+  'opencode/qwen3.6-plus-free': 'nano-gpt/qwen/qwen3.6-plus',
+  'opencode/mimo-v2-omni-free': 'openrouter/xiaomi/mimo-v2-omni',
+  'opencode/mimo-v2-pro-free': 'openrouter/xiaomi/mimo-v2-pro',
+  'opencode/ling-3.0-tiny-free': 'empiriolabs/qwen3-8-flash',
+  'opencode/trinity-large-preview-free': 'vercel/spacexai/grok-4.1-fast-reasoning',
+  'opencode/nemotron-3.5-super-vl-free': 'openrouter/nvidia/nemotron-3.5-super-vl',
+  'opencode/ling-2.6-flash-free': 'empiriolabs/qwen3-8-flash',
+  'opencode/minimax-m2.5-free': 'openrouter/minimax/minimax-m2.5',
+  'opencode/minimax-m3-free': 'openrouter/minimax/minimax-m3',
+  'opencode/muse-spark-1.2-contributor-free': 'nano-gpt/meta/muse-spark-1.2',
+  'opencode/muse-spark-1.3-contributor-free': 'bothub/muse-spark-1.3-contributor',
+  'opencode/deepseek-v4-flash-free': 'openrouter/deepseek/deepseek-v4-flash',
+  'opencode/deepseek-v4.1-flash-free': 'openrouter/deepseek/deepseek-v4.1-flash',
+  'opencode/hy3-free': 'openrouter/tencent/hy3',
+  'opencode/glm-5.3-flash-free': 'openrouter/z-ai/glm-5.3-flash',
+  'opencode/nemotron-3.5-super-vl-free': 'openrouter/nvidia/nemotron-3.5-super-vl',
+  'opencode/beam-free': 'openrouter/xiaomi/mimo-v2.5',
+  'opencode/space-bunny-free': 'pioneer/mistralai/Mistral-7B-Instruct-v0.3',
+  'opencode/fledge-alpha-free': 'pioneer/mistralai/Mistral-7B-Instruct-v0.3',
+  'opencode/big-pickle': 'vercel/spacexai/grok-4.1-fast-reasoning',
+  'opencode/grok-code': 'vercel/spacexai/grok-4.1-fast-reasoning',
+  'opencode/x-preview-f-free': 'vercel/spacexai/grok-4.1-fast-reasoning',
+  'opencode/nemotron-3.5-lightning-free': 'nano-gpt/nvidia/nemotron-3.5-lightning',
+  'opencode/big-pickle': 'vercel/spacexai/grok-4.1-fast-reasoning',
+  'opencode/ling-3.0-flash-fin-free': 'empiriolabs/qwen3-8-flash',
+  'opencode/ling-3.0-tiny-free': 'empiriolabs/qwen3-8-flash',
+  'opencode/ling-2.6-flash-free': 'empiriolabs/qwen3-8-flash',
+  'opencode/trinity-large-preview-free': 'vercel/spacexai/grok-4.1-fast-reasoning',
+  'opencode/mimo-v2.5-free': 'openrouter/xiaomi/mimo-v2.5',
+  'opencode/mimo-v2-flash-free': 'openrouter/xiaomi/mimo-v2-flash',
+  'opencode/mimo-v2-omni-free': 'openrouter/xiaomi/mimo-v2-omni',
+  'opencode/mimo-v2-pro-free': 'openrouter/xiaomi/mimo-v2-pro',
+  'opencode/qwen3.6-plus-free': 'nano-gpt/qwen/qwen3.6-plus',
+  'opencode/glm-4.7-free': 'openrouter/z-ai/glm-4.7',
+  'opencode/glm-5-free': 'openrouter/z-ai/glm-5',
+  'opencode/hy3-free': 'openrouter/tencent/hy3',
+  'opencode/glm-5.3-flash-free': 'openrouter/z-ai/glm-5.3-flash',
+  'opencode/minimax-m2.5-free': 'openrouter/minimax/minimax-m2.5',
+  'opencode/minimax-m3-free': 'openrouter/minimax/minimax-m3',
+  'opencode/muse-spark-1.2-contributor-free': 'nano-gpt/meta/muse-spark-1.2',
+  'opencode/muse-spark-1.3-contributor-free': 'bothub/muse-spark-1.3-contributor',
+  'opencode/deepseek-v4-flash-free': 'openrouter/deepseek/deepseek-v4-flash',
+  'opencode/deepseek-v4.1-flash-free': 'openrouter/deepseek/deepseek-v4.1-flash',
+  'opencode/hy3-free': 'openrouter/tencent/hy3',
+  'opencode/glm-5.3-flash-free': 'openrouter/z-ai/glm-5.3-flash',
+  'opencode/nemotron-3.5-super-vl-free': 'openrouter/nvidia/nemotron-3.5-super-vl',
+};
+
+function getFreeModelMapping(provider, model) {
+  const key = `${provider}/${model}`;
+  const mapped = FREE_MODEL_MAPPING[key] || FREE_MODEL_MAPPING[model];
+  if (!mapped) return null;
+  const [mp, ...mm] = mapped.split('/');
+  return { provider: mp, model: mm.join('/') };
+}
 
 function catalogCandidates() {
   const homes = [process.env.USERPROFILE, process.env.HOME].filter(Boolean);
@@ -52,18 +130,14 @@ function entry(data, provider, model) {
   return nonzero(c) ? { input: c.input || 0, output: c.output || 0, cacheRead: c.cache_read || 0 } : null;
 }
 
-const stripFree = (m) => String(m).replace(/-contributor-free$/, '').replace(/-free$/, '').replace(/:free$/, '');
-
 // Map a usage model (provider/model as recorded in the DB) to paid rates.
-// Returns { input, output, cacheRead, source, kind } or null when the catalog
-// has no comparable paid listing at all.
 function priceFor(provider, model) {
   const cat = loadCatalog();
   if (!cat.data) return null;
   const data = cat.data;
   provider = provider || 'unknown';
   model = model || 'unknown';
-  if (model === 'unknown') return null; // unattributed usage: never invent a rate
+  if (model === 'unknown') return null;
 
   const mk = (p, m, kind) => {
     const r = entry(data, p, m);
@@ -73,10 +147,7 @@ function priceFor(provider, model) {
   let r = mk(provider, model, 'exact');
   if (r) return r;
 
-  // Free suffixes and a provider prefix duplicated inside the model id
-  // (opencode records nvidia/nvidia/nemotron-... on some sessions). The plain
-  // base is always kept: a model that is free at ITS provider (cost 0) may
-  // still have a paid listing elsewhere (e.g. nvidia/z-ai/glm-5.3-flash).
+  // Free suffixes
   const bases = [];
   const deDup = model.startsWith(`${provider}/`) ? model.slice(provider.length + 1) : null;
   for (const b of [stripFree(model), deDup && stripFree(deDup), deDup, model]) {
@@ -91,21 +162,16 @@ function priceFor(provider, model) {
     r = mk('opencode', b, 'proxy');
     if (r) return r;
   }
-  // Any provider, cheapest nonzero listing for the same base name. Cheapest
-  // keeps the estimate conservative (it understates savings, never inflates).
-  // Also try the full model name (with provider prefix) as a base, since cache keys may include provider prefix.
+
+  // Any provider, cheapest nonzero listing for the same base name
   const allBases = [...bases];
-  if (model !== bases[0] && !allBases.includes(model)) allBases.push(model); // full model name (may include provider prefix)
-  // Also try provider/model as a base (for cases where model name doesn't include provider prefix but cache key does)
+  if (model !== bases[0] && !allBases.includes(model)) allBases.push(model);
   const providerModel = `${provider}/${model}`;
   if (!allBases.includes(providerModel)) allBases.push(providerModel);
-  // Also try openrouter/ + model (common case where sub-providers like reflection are under openrouter)
   const openrouterModel = `openrouter/${model}`;
   if (!allBases.includes(openrouterModel)) allBases.push(openrouterModel);
-  // Also try openrouter/provider/model (for cases where cache has openrouter/subprovider/model)
   const openrouterProviderModel = `openrouter/${provider}/${model}`;
   if (!allBases.includes(openrouterProviderModel)) allBases.push(openrouterProviderModel);
-  // Also try openrouter + common sub-providers (reflection, nvidia, etc.) for openrouter models without sub-provider prefix
   if (provider === 'openrouter' && !model.includes('/')) {
     const subProviders = ['reflection', 'nvidia', 'google', 'anthropic', 'meta', 'mistral', 'cohere', 'mistralai'];
     for (const sub of subProviders) {
@@ -129,6 +195,14 @@ function priceFor(provider, model) {
       return { ...rates, source: `${pid}/${b}`, kind: 'proxy' };
     }
   }
+
+  // Check manual free model mapping before final null return
+  const freeMapping = getFreeModelMapping(provider, model);
+  if (freeMapping) {
+    const r2 = mk(freeMapping.provider, freeMapping.model, 'proxy');
+    if (r2) return r2;
+  }
+
   return null;
 }
 
