@@ -93,7 +93,29 @@ function priceFor(provider, model) {
   }
   // Any provider, cheapest nonzero listing for the same base name. Cheapest
   // keeps the estimate conservative (it understates savings, never inflates).
-  for (const b of bases) {
+  // Also try the full model name (with provider prefix) as a base, since cache keys may include provider prefix.
+  const allBases = [...bases];
+  if (model !== bases[0] && !allBases.includes(model)) allBases.push(model); // full model name (may include provider prefix)
+  // Also try provider/model as a base (for cases where model name doesn't include provider prefix but cache key does)
+  const providerModel = `${provider}/${model}`;
+  if (!allBases.includes(providerModel)) allBases.push(providerModel);
+  // Also try openrouter/ + model (common case where sub-providers like reflection are under openrouter)
+  const openrouterModel = `openrouter/${model}`;
+  if (!allBases.includes(openrouterModel)) allBases.push(openrouterModel);
+  // Also try openrouter/provider/model (for cases where cache has openrouter/subprovider/model)
+  const openrouterProviderModel = `openrouter/${provider}/${model}`;
+  if (!allBases.includes(openrouterProviderModel)) allBases.push(openrouterProviderModel);
+  // Also try openrouter + common sub-providers (reflection, nvidia, etc.) for openrouter models without sub-provider prefix
+  if (provider === 'openrouter' && !model.includes('/')) {
+    const subProviders = ['reflection', 'nvidia', 'google', 'anthropic', 'meta', 'mistral', 'cohere', 'mistralai'];
+    for (const sub of subProviders) {
+      const subModel = `${sub}/${model}`;
+      if (!allBases.includes(subModel)) allBases.push(subModel);
+      const openrouterSubModel = `openrouter/${sub}/${model}`;
+      if (!allBases.includes(openrouterSubModel)) allBases.push(openrouterSubModel);
+    }
+  }
+  for (const b of allBases) {
     let best = null;
     for (const pid of Object.keys(data).sort()) {
       const e = entry(data, pid, b);
